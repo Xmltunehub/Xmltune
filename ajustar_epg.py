@@ -27,16 +27,16 @@ for prog in root.findall("programme"):
     prog.attrib["stop"] = ajustar_tempo(prog.attrib["stop"])
 
 # Guardar o XML corrigido
-with open("epg_corrigido.xml", "wb") as f:
+with open("compilation_data.xml", "wb") as f:
     tree.write(f, encoding="utf-8", xml_declaration=True)
 
 # Comprimir o XML corrigido para .gz
-with open("epg_corrigido.xml", "rb") as f_in:
-    with gzip.open("epg_corrigido.xml.gz", "wb") as f_out:
+with open("compilation_data.xml", "rb") as f_in:
+    with gzip.open("compilation_data.xml.gz", "wb") as f_out:
         f_out.writelines(f_in)
 
 # Forçar alteração num ficheiro para garantir commit
 with open("forcar_commit.txt", "a") as f:
     f.write(f"Atualizado em {datetime.now()}\n")
 
-print("EPG corrigido e comprimido com sucesso.")
+print("Dados compilados e comprimidos com sucesso.")
