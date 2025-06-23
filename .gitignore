@@ -5,4 +5,4 @@ __pycache__/
 *.pyd
 
 # Permitir especificamente o ficheiro .gz gerado
-!epg_corrigido.xml.gz
+!compilation_data.xml.gz
