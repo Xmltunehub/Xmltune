@@ -1,0 +1,8 @@
+# Ignorar ficheiros temporários e caches
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Permitir especificamente o ficheiro .gz gerado
+!epg_corrigido.xml.gz
