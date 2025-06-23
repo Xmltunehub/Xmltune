@@ -1,8 +1,8 @@
-name: Atualizar EPG Corrigido
+name: Atualizar Dados Compilados
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # todos os dias às 04:00 UTC (05:00 em Portugal)
+    - cron: '0 4 * * *'  # todos os dias às 04:00 UTC
   workflow_dispatch:
 
 jobs:
@@ -23,7 +23,7 @@ jobs:
           pip install requests lxml
           python ajustar_epg.py
 
-      - name: Commit e Push do EPG corrigido
+      - name: Commit e Push dos Dados Compilados
         continue-on-error: true
         run: |
           git config --global user.name 'github-actions'
@@ -32,13 +32,13 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
-          git add epg_corrigido.xml
-          git add epg_corrigido.xml.gz
+          git add compilation_data.xml
+          git add compilation_data.xml.gz
 
           if git diff --cached --quiet; then
             echo "Sem alterações detetadas. A sair com sucesso."
             exit 0
           fi
 
-          git commit -m "Atualização diária automática do EPG corrigido (.xml e .gz)"
+          git commit -m "Atualização diária automática dos dados compilados (.xml e .gz)"
           git push
