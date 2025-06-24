@@ -1,8 +1,8 @@
-name: Atualizar Dados Compilados
+name: Atualizar Compilação
 
 on:
   schedule:
-    - cron: '0 4 * * *'  # todos os dias às 04:00 UTC
+    - cron: '0 4 * * *'  # todos os dias às 04:00 UTC (05:00 em Portugal)
   workflow_dispatch:
 
 jobs:
@@ -18,12 +18,12 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Executar script de ajuste
+      - name: Executar processo
         run: |
           pip install requests lxml
-          python ajustar_epg.py
+          python processar.py
 
-      - name: Commit e Push dos Dados Compilados
+      - name: Commit e Push da compilação
         continue-on-error: true
         run: |
           git config --global user.name 'github-actions'
@@ -32,13 +32,13 @@ jobs:
           git fetch origin main
           git reset --hard origin/main
 
-          git add compilation_data.xml
-          git add compilation_data.xml.gz
+          git add compilacao.xml
+          git add compilacao.xml.gz
 
           if git diff --cached --quiet; then
             echo "Sem alterações detetadas. A sair com sucesso."
             exit 0
           fi
 
-          git commit -m "Atualização diária automática dos dados compilados (.xml e .gz)"
+          git commit -m "Atualização automática diária da compilação (.xml e .gz)"
           git push
