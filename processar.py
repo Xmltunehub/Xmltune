@@ -16,7 +16,13 @@ url = "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz"
 r = requests.get(url)
 with open("origem.xml.gz", "wb") as f:
     f.write(r.content)
-print("Download concluído.")
+
+tamanho_ficheiro = os.path.getsize("origem.xml.gz")
+print(f"Download concluído. Tamanho do ficheiro: {tamanho_ficheiro} bytes")
+
+if tamanho_ficheiro < 1000:
+    print("Erro: Ficheiro descarregado parece estar vazio ou incompleto. Processo abortado.")
+    exit(1)
 
 # Descomprimir o XML
 with gzip.open("origem.xml.gz", "rb") as f:
