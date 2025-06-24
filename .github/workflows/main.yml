@@ -14,13 +14,11 @@ jobs:
         uses: actions/checkout@v3
 
       - name: Instalar dependências Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
+        run: |
+          pip install -r requirements.txt
 
       - name: Executar script de processamento
         run: |
-          pip install requests lxml
           python processar.py
 
       - name: Commit e Push da compilação
