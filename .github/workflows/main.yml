@@ -18,7 +18,7 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Executar processo
+      - name: Executar script de processamento
         run: |
           pip install requests lxml
           python processar.py
@@ -40,5 +40,5 @@ jobs:
             exit 0
           fi
 
-          git commit -m "Atualização automática diária da compilação (.xml e .gz)"
+          git commit -m "Atualização diária automática da compilação (.xml e .gz)"
           git push
