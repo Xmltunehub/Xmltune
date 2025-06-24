@@ -3,7 +3,7 @@ import gzip
 from lxml import etree
 from datetime import datetime, timedelta
 
-# Fazer download da fonte original
+# Fazer download do ficheiro original
 url = "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz"
 r = requests.get(url)
 with open("origem.xml.gz", "wb") as f:
@@ -21,22 +21,22 @@ def ajustar_tempo(valor):
     dt += timedelta(minutes=1, seconds=1)
     return dt.strftime("%Y%m%d%H%M%S %z")
 
-# Ajustar tempos dos programas
+# Ajustar tempos dos <programme>
 for prog in root.findall("programme"):
     prog.attrib["start"] = ajustar_tempo(prog.attrib["start"])
     prog.attrib["stop"] = ajustar_tempo(prog.attrib["stop"])
 
-# Guardar o XML final
+# Guardar o ficheiro compilado
 with open("compilacao.xml", "wb") as f:
     tree.write(f, encoding="utf-8", xml_declaration=True)
 
-# Comprimir o XML
+# Comprimir o ficheiro compilado
 with open("compilacao.xml", "rb") as f_in:
     with gzip.open("compilacao.xml.gz", "wb") as f_out:
         f_out.writelines(f_in)
 
-# Forçar alteração para commit
+# Forçar alteração para garantir commit
 with open("forcar_commit.txt", "a") as f:
     f.write(f"Atualizado em {datetime.now()}\n")
 
-print("Compilação concluída com sucesso.")
+print("Compilação concluída e comprimida com sucesso.")
