@@ -20,5 +20,9 @@ jobs:
 
           git rm -f compilacao.xml compilacao.xml.gz || true
 
-          git commit -m "Limpeza diária automática dos ficheiros de compilação"
-          git push
+          if [ -n "$(git status --porcelain)" ]; then
+            git commit -m "Limpeza diária automática dos ficheiros de compilação"
+            git push
+          else
+            echo "Nada para limpar, repositório já está limpo."
+          fi
