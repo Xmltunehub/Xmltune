@@ -4,5 +4,6 @@ __pycache__/
 *.pyo
 *.pyd
 
-# Permitir especificamente o ficheiro comprimido gerado
+# Permitir especificamente os ficheiros gerados
+!compilacao.xml
 !compilacao.xml.gz
