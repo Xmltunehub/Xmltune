@@ -2,14 +2,54 @@ import requests
 import gzip
 import os
 import shutil
+import argparse
+import json
 from lxml import etree
 from datetime import datetime, timedelta
+from pathlib import Path
 import logging
 import sys
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
+
+# Configuração padrão
+DEFAULT_OFFSET_SECONDS = 30
+CONFIG_FILE = "config.json"
+
+def carregar_configuracao():
+    """Carrega configuração do ficheiro ou cria padrão"""
+    config_default = {
+        "offset_seconds": DEFAULT_OFFSET_SECONDS,
+        "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+        "last_update": None,
+        "app_version": "1.0.0"
+    }
+    
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                # Garantir que todos os campos existem
+                for key, value in config_default.items():
+                    if key not in config:
+                        config[key] = value
+                return config
+        except Exception as e:
+            logger.warning(f"Erro ao carregar config: {e}. Usando padrão.")
+    
+    return config_default
+
+def guardar_configuracao(config):
+    """Guarda configuração no ficheiro"""
+    try:
+        config["last_update"] = datetime.now().isoformat()
+        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        logger.info(f"Configuração guardada: offset={config['offset_seconds']}s")
+    except Exception as e:
+        logger.error(f"Erro ao guardar configuração: {e}")
 
 def limpar_ficheiros_temporarios():
     """Remove ficheiros temporários"""
@@ -22,21 +62,18 @@ def limpar_ficheiros_temporarios():
             except Exception as e:
                 logger.warning(f"Não foi possível remover {ficheiro}: {e}")
 
-def fazer_download():
+def fazer_download(url):
     """Faz download do ficheiro EPG original"""
-    url = "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz"
-    
     try:
-        logger.info("🔄 Iniciando download do EPG...")
+        logger.info(f"🔄 Iniciando download do EPG de: {url}")
         
         # Request com timeout e headers melhorados
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
             'Accept-Language': 'pt-PT,pt;q=0.9,en;q=0.8',
             'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive',
-            'Upgrade-Insecure-Requests': '1'
+            'Connection': 'keep-alive'
         }
         
         # Tentar o download com retry
@@ -49,12 +86,10 @@ def fazer_download():
                 response.raise_for_status()
                 
                 # Guardar ficheiro
-                total_size = 0
                 with open("origem.xml.gz", "wb") as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
-                            total_size += len(chunk)
                 
                 # Verificar tamanho
                 tamanho = os.path.getsize("origem.xml.gz")
@@ -66,7 +101,7 @@ def fazer_download():
                 # Verificar se é um ficheiro gzip válido
                 try:
                     with gzip.open("origem.xml.gz", "rb") as test_file:
-                        test_file.read(100)  # Ler primeiros 100 bytes para testar
+                        test_file.read(100)
                     logger.info("✅ Ficheiro gzip válido")
                 except Exception as e:
                     raise Exception(f"Ficheiro gzip inválido: {e}")
@@ -96,7 +131,6 @@ def descomprimir_xml():
             with open("origem.xml", "wb") as f_out:
                 shutil.copyfileobj(f_in, f_out)
         
-        # Verificar se foi descomprimido
         if not os.path.exists("origem.xml"):
             raise Exception("Ficheiro XML não foi criado")
             
@@ -112,12 +146,13 @@ def descomprimir_xml():
         logger.error(f"❌ Erro na descompressão: {e}")
         return False
 
-def processar_xml():
-    """Processa o XML aplicando +1 minuto e 1 segundo"""
+def processar_xml(offset_seconds):
+    """Processa o XML aplicando offset em segundos"""
     try:
-        logger.info("🔄 A processar XML...")
+        offset_info = f"+{offset_seconds}" if offset_seconds > 0 else str(offset_seconds)
+        logger.info(f"🔄 A processar XML (aplicando {offset_info} segundos)...")
         
-        # Parse do XML com encoding detection
+        # Parse do XML
         parser = etree.XMLParser(recover=True, encoding='utf-8')
         
         try:
@@ -150,17 +185,17 @@ def processar_xml():
                 # Processar horário de início
                 if "start" in prog.attrib:
                     start_original = prog.attrib["start"]
-                    start_ajustado = ajustar_tempo(start_original)
+                    start_ajustado = ajustar_tempo(start_original, offset_seconds)
                     prog.attrib["start"] = start_ajustado
                     
-                    # Debug para primeiros 5 programas
-                    if programas_processados < 5:
+                    # Debug para primeiros 3 programas
+                    if programas_processados < 3:
                         logger.info(f"Programa {programas_processados + 1}: {start_original} → {start_ajustado}")
                 
                 # Processar horário de fim
                 if "stop" in prog.attrib:
                     stop_original = prog.attrib["stop"]
-                    stop_ajustado = ajustar_tempo(stop_original)
+                    stop_ajustado = ajustar_tempo(stop_original, offset_seconds)
                     prog.attrib["stop"] = stop_ajustado
                 
                 programas_processados += 1
@@ -170,24 +205,23 @@ def processar_xml():
                 logger.warning(f"Erro ao processar programa {prog.get('start', 'unknown')}: {e}")
         
         logger.info(f"✅ Processamento concluído:")
+        logger.info(f"   - Offset aplicado: {offset_info} segundos")
         logger.info(f"   - Programas processados: {programas_processados}")
         logger.info(f"   - Programas com erro: {programas_com_erro}")
         
         if programas_processados == 0:
             raise Exception("Nenhum programa foi processado com sucesso")
         
-        # Guardar XML processado com encoding correto
+        # Guardar XML processado
         try:
             with open("compilacao.xml", "wb") as f:
                 tree.write(f, encoding="utf-8", xml_declaration=True, pretty_print=True)
             
-            # Verificar se o ficheiro foi criado
             tamanho_compilacao = os.path.getsize("compilacao.xml")
             logger.info(f"✅ Ficheiro compilacao.xml criado: {tamanho_compilacao:,} bytes")
             
         except Exception as e:
             logger.error(f"Erro ao guardar XML: {e}")
-            # Tentar sem pretty_print
             with open("compilacao.xml", "wb") as f:
                 tree.write(f, encoding="utf-8", xml_declaration=True)
             logger.info("✅ XML guardado sem formatação")
@@ -198,19 +232,16 @@ def processar_xml():
         logger.error(f"❌ Erro no processamento XML: {e}")
         return False
 
-def ajustar_tempo(valor_tempo):
-    """Ajusta o tempo adicionando 1 minuto e 1 segundo"""
+def ajustar_tempo(valor_tempo, offset_seconds):
+    """Ajusta o tempo adicionando/subtraindo segundos"""
     try:
-        # Remover espaços extras
         valor_tempo = valor_tempo.strip()
         
-        # Formato esperado: YYYYMMDDHHMMSS +TZTZ ou YYYYMMDDHHMMSS
         if len(valor_tempo) >= 14:
             # Separar data/hora do timezone
             parte_data = valor_tempo[:14]
             parte_timezone = valor_tempo[14:].strip()
             
-            # Verificar se a parte da data é numérica
             if not parte_data.isdigit():
                 logger.warning(f"Parte da data não é numérica: {parte_data}")
                 return valor_tempo
@@ -218,8 +249,8 @@ def ajustar_tempo(valor_tempo):
             # Converter para datetime
             dt = datetime.strptime(parte_data, "%Y%m%d%H%M%S")
             
-            # Adicionar 1 minuto e 1 segundo
-            dt += timedelta(minutes=1, seconds=1)
+            # Aplicar offset (pode ser positivo ou negativo)
+            dt += timedelta(seconds=offset_seconds)
             
             # Reconstruir string
             nova_data = dt.strftime("%Y%m%d%H%M%S")
@@ -245,7 +276,6 @@ def comprimir_xml():
     try:
         logger.info("🔄 A comprimir ficheiro final...")
         
-        # Verificar se o ficheiro XML existe
         if not os.path.exists("compilacao.xml"):
             raise Exception("Ficheiro compilacao.xml não encontrado")
         
@@ -256,7 +286,6 @@ def comprimir_xml():
             with gzip.open("compilacao.xml.gz", "wb", compresslevel=9) as f_out:
                 shutil.copyfileobj(f_in, f_out)
         
-        # Verificar ficheiro comprimido
         tamanho_final = os.path.getsize("compilacao.xml.gz")
         ratio = (1 - tamanho_final/tamanho_original) * 100
         
@@ -291,7 +320,7 @@ def verificar_ficheiros_finais():
         if gz_size < 500:
             raise Exception("compilacao.xml.gz muito pequeno")
         
-        # Testar se o .gz pode ser descomprimido
+        # Testar descompressão
         try:
             with gzip.open("compilacao.xml.gz", "rb") as f:
                 test_data = f.read(1000)
@@ -312,14 +341,38 @@ def verificar_ficheiros_finais():
 
 def main():
     """Função principal"""
-    logger.info("🚀 Iniciando processamento EPG...")
+    parser = argparse.ArgumentParser(description='Processador EPG com offset configurável')
+    parser.add_argument('--offset', type=int, help='Offset em segundos (pode ser negativo)')
+    parser.add_argument('--config', action='store_true', help='Usar configuração do ficheiro')
+    parser.add_argument('--set-offset', type=int, help='Definir novo offset padrão')
+    
+    args = parser.parse_args()
+    
+    # Carregar configuração
+    config = carregar_configuracao()
+    
+    # Determinar offset a usar
+    if args.set_offset is not None:
+        config['offset_seconds'] = args.set_offset
+        guardar_configuracao(config)
+        logger.info(f"✅ Offset padrão definido para {args.set_offset} segundos")
+        return True
+    
+    if args.offset is not None:
+        offset_seconds = args.offset
+        logger.info(f"🎯 Usando offset da linha de comando: {offset_seconds}s")
+    else:
+        offset_seconds = config['offset_seconds']
+        logger.info(f"🎯 Usando offset da configuração: {offset_seconds}s")
+    
+    logger.info(f"🚀 Iniciando processamento EPG (offset: {offset_seconds:+d} segundos)...")
     
     try:
         # 1. Limpar ficheiros temporários
         limpar_ficheiros_temporarios()
         
         # 2. Fazer download
-        if not fazer_download():
+        if not fazer_download(config['source_url']):
             logger.error("❌ Falha no download - processo abortado")
             return False
         
@@ -329,7 +382,7 @@ def main():
             return False
         
         # 4. Processar XML
-        if not processar_xml():
+        if not processar_xml(offset_seconds):
             logger.error("❌ Falha no processamento - processo abortado")
             return False
         
@@ -343,11 +396,16 @@ def main():
             logger.error("❌ Falha na verificação final - processo abortado")
             return False
         
-        # 7. Limpar ficheiros temporários
+        # 7. Atualizar configuração com último processamento
+        config['last_update'] = datetime.now().isoformat()
+        config['last_offset_used'] = offset_seconds
+        guardar_configuracao(config)
+        
+        # 8. Limpar ficheiros temporários
         limpar_ficheiros_temporarios()
         
         logger.info("🎉 Processo concluído com sucesso!")
-        logger.info("📁 Ficheiros finais criados:")
+        logger.info(f"📁 Ficheiros finais criados com offset de {offset_seconds:+d}s:")
         logger.info("   - compilacao.xml")
         logger.info("   - compilacao.xml.gz")
         
