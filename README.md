@@ -23,3 +23,11 @@ O sistema executa as seguintes etapas:
 ---
 
 ## 🗂️ Estrutura do Projeto
+
+```plaintext
+├── .github/
+│   └── workflows/              # Automatização diária (limpeza e processamento)
+├── processar.py                # Script principal de processamento
+├── requirements.txt            # Dependências do Python
+├── .gitignore                  # Definição dos ficheiros ignorados
+├── README.md                   # Esta descrição
