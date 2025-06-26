@@ -10,16 +10,21 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+*.egg-info/
+dist/
+build/
 
 # Ficheiros temporários do processamento EPG
 origem.xml
 origem.xml.gz
 *.tmp
 *.temp
+*.cache
 
-# Logs
+# Logs e debug
 *.log
 logs/
+debug/
 
 # IDE/Editor
 .vscode/
@@ -27,20 +32,34 @@ logs/
 *.swp
 *.swo
 *~
+.spyderproject
+.spyproject
 
 # Sistema
 .DS_Store
 Thumbs.db
+desktop.ini
 
 # Backup files
 *.bak
 *.backup
+*.orig
 
-# Ficheiros temporários adicionais
-*.cache
+# Pytest e testes
 .pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Jupyter Notebooks (caso use para debug)
+.ipynb_checkpoints
 
 # Permitir explicitamente os ficheiros gerados finais
 !compilacao.xml
 !compilacao.xml.gz
 !config.json
+
+# Ficheiros específicos do projeto que devem ser ignorados
+.env
+*.key
+*.pem
