@@ -32,6 +32,14 @@ logs/
 .DS_Store
 Thumbs.db
 
+# Backup files
+*.bak
+*.backup
+
+# Ficheiros temporários adicionais
+*.cache
+.pytest_cache/
+
 # Permitir explicitamente os ficheiros gerados finais
 !compilacao.xml
 !compilacao.xml.gz
