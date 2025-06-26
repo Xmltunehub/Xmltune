@@ -1,8 +1,6 @@
 {
   "offset_seconds": 30,
   "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-  "last_update": "2025-06-25T22:59:09+00:00",
-  "last_offset_used": 30,
-  "updated_by": "github-actions[bot]",
-  "workflow_run": "15888914680",
+  "last_update": "2025-06-26T21:51:37.152503",
   "app_version": "1.0.0"
+}
