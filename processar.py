@@ -9,6 +9,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 import logging
 import sys
+import time
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
@@ -67,7 +68,7 @@ def fazer_download(url):
     try:
         logger.info(f"🔄 Iniciando download do EPG de: {url}")
         
-        # Request com timeout e headers melhorados
+        # Request com timeout melhorado e headers melhorados
         headers = {
             'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -82,14 +83,27 @@ def fazer_download(url):
             try:
                 logger.info(f"Tentativa {tentativa + 1}/{max_tentativas}")
                 
-                response = requests.get(url, headers=headers, timeout=120, stream=True)
+                # Timeout aumentado para ficheiros grandes
+                response = requests.get(url, headers=headers, timeout=300, stream=True)
                 response.raise_for_status()
                 
-                # Guardar ficheiro
+                # Guardar ficheiro com progresso
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
                 with open("origem.xml.gz", "wb") as f:
                     for chunk in response.iter_content(chunk_size=8192):
                         if chunk:
                             f.write(chunk)
+                            downloaded += len(chunk)
+                            
+                            # Log de progresso a cada 1MB
+                            if downloaded % (1024 * 1024) == 0:
+                                if total_size > 0:
+                                    progress = (downloaded / total_size) * 100
+                                    logger.info(f"📥 Progresso: {downloaded:,} / {total_size:,} bytes ({progress:.1f}%)")
+                                else:
+                                    logger.info(f"📥 Descarregados: {downloaded:,} bytes")
                 
                 # Verificar tamanho
                 tamanho = os.path.getsize("origem.xml.gz")
@@ -101,7 +115,9 @@ def fazer_download(url):
                 # Verificar se é um ficheiro gzip válido
                 try:
                     with gzip.open("origem.xml.gz", "rb") as test_file:
-                        test_file.read(100)
+                        test_content = test_file.read(100)
+                        if len(test_content) < 50:
+                            raise Exception("Conteúdo gzip insuficiente")
                     logger.info("✅ Ficheiro gzip válido")
                 except Exception as e:
                     raise Exception(f"Ficheiro gzip inválido: {e}")
@@ -112,9 +128,8 @@ def fazer_download(url):
                 logger.warning(f"Tentativa {tentativa + 1} falhou: {e}")
                 if tentativa == max_tentativas - 1:
                     raise
-                logger.info("Aguardando 5 segundos antes da próxima tentativa...")
-                import time
-                time.sleep(5)
+                logger.info("Aguardando 10 segundos antes da próxima tentativa...")
+                time.sleep(10)
         
         return False
         
@@ -127,15 +142,31 @@ def descomprimir_xml():
     try:
         logger.info("🔄 A descomprimir XML...")
         
+        # Verificar tamanho do ficheiro comprimido
+        tamanho_gz = os.path.getsize("origem.xml.gz")
+        logger.info(f"Tamanho do ficheiro .gz: {tamanho_gz:,} bytes")
+        
         with gzip.open("origem.xml.gz", "rb") as f_in:
             with open("origem.xml", "wb") as f_out:
-                shutil.copyfileobj(f_in, f_out)
+                # Descomprimir com progresso
+                total_read = 0
+                while True:
+                    chunk = f_in.read(64 * 1024)  # 64KB chunks
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+                    total_read += len(chunk)
+                    
+                    # Log de progresso a cada 5MB
+                    if total_read % (5 * 1024 * 1024) == 0:
+                        logger.info(f"📤 Descomprimidos: {total_read:,} bytes")
         
         if not os.path.exists("origem.xml"):
             raise Exception("Ficheiro XML não foi criado")
             
         tamanho = os.path.getsize("origem.xml")
-        logger.info(f"✅ Descompressão concluída. Tamanho XML: {tamanho:,} bytes")
+        ratio = (tamanho / tamanho_gz) if tamanho_gz > 0 else 0
+        logger.info(f"✅ Descompressão concluída. Tamanho XML: {tamanho:,} bytes (ratio: {ratio:.1f}x)")
         
         if tamanho < 1000:
             raise Exception("Ficheiro XML descomprimido muito pequeno")
@@ -179,8 +210,9 @@ def processar_xml(offset_seconds):
         programas_processados = 0
         programas_com_erro = 0
         
-        # Processar cada programa
-        for prog in programas:
+        # Processar cada programa com progresso
+        total_programas = len(programas)
+        for i, prog in enumerate(programas):
             try:
                 # Processar horário de início
                 if "start" in prog.attrib:
@@ -200,6 +232,11 @@ def processar_xml(offset_seconds):
                 
                 programas_processados += 1
                 
+                # Log de progresso a cada 10% dos programas
+                if programas_processados % max(1, total_programas // 10) == 0:
+                    progress = (programas_processados / total_programas) * 100
+                    logger.info(f"🔄 Progresso processamento: {progress:.0f}% ({programas_processados}/{total_programas})")
+                
             except Exception as e:
                 programas_com_erro += 1
                 logger.warning(f"Erro ao processar programa {prog.get('start', 'unknown')}: {e}")
@@ -208,11 +245,13 @@ def processar_xml(offset_seconds):
         logger.info(f"   - Offset aplicado: {offset_info} segundos")
         logger.info(f"   - Programas processados: {programas_processados}")
         logger.info(f"   - Programas com erro: {programas_com_erro}")
+        logger.info(f"   - Taxa de sucesso: {(programas_processados/total_programas)*100:.1f}%")
         
         if programas_processados == 0:
             raise Exception("Nenhum programa foi processado com sucesso")
         
         # Guardar XML processado
+        logger.info("💾 A guardar XML processado...")
         try:
             with open("compilacao.xml", "wb") as f:
                 tree.write(f, encoding="utf-8", xml_declaration=True, pretty_print=True)
@@ -221,7 +260,7 @@ def processar_xml(offset_seconds):
             logger.info(f"✅ Ficheiro compilacao.xml criado: {tamanho_compilacao:,} bytes")
             
         except Exception as e:
-            logger.error(f"Erro ao guardar XML: {e}")
+            logger.error(f"Erro ao guardar XML com formatação: {e}")
             with open("compilacao.xml", "wb") as f:
                 tree.write(f, encoding="utf-8", xml_declaration=True)
             logger.info("✅ XML guardado sem formatação")
@@ -282,9 +321,21 @@ def comprimir_xml():
         tamanho_original = os.path.getsize("compilacao.xml")
         logger.info(f"Tamanho original: {tamanho_original:,} bytes")
         
+        # Comprimir com progresso
         with open("compilacao.xml", "rb") as f_in:
             with gzip.open("compilacao.xml.gz", "wb", compresslevel=9) as f_out:
-                shutil.copyfileobj(f_in, f_out)
+                total_read = 0
+                while True:
+                    chunk = f_in.read(64 * 1024)  # 64KB chunks
+                    if not chunk:
+                        break
+                    f_out.write(chunk)
+                    total_read += len(chunk)
+                    
+                    # Log de progresso a cada 2MB
+                    if total_read % (2 * 1024 * 1024) == 0:
+                        progress = (total_read / tamanho_original) * 100
+                        logger.info(f"🗜️ Compressão: {progress:.0f}% ({total_read:,}/{tamanho_original:,} bytes)")
         
         tamanho_final = os.path.getsize("compilacao.xml.gz")
         ratio = (1 - tamanho_final/tamanho_original) * 100
@@ -332,6 +383,7 @@ def verificar_ficheiros_finais():
         logger.info("✅ Verificação dos ficheiros finais concluída com sucesso")
         logger.info(f"   - compilacao.xml: {xml_size:,} bytes")
         logger.info(f"   - compilacao.xml.gz: {gz_size:,} bytes")
+        logger.info(f"   - Ratio de compressão: {((1 - gz_size/xml_size) * 100):.1f}%")
         
         return True
         
@@ -363,59 +415,4 @@ def main():
         logger.info(f"🎯 Usando offset da linha de comando: {offset_seconds}s")
     else:
         offset_seconds = config['offset_seconds']
-        logger.info(f"🎯 Usando offset da configuração: {offset_seconds}s")
-    
-    logger.info(f"🚀 Iniciando processamento EPG (offset: {offset_seconds:+d} segundos)...")
-    
-    try:
-        # 1. Limpar ficheiros temporários
-        limpar_ficheiros_temporarios()
-        
-        # 2. Fazer download
-        if not fazer_download(config['source_url']):
-            logger.error("❌ Falha no download - processo abortado")
-            return False
-        
-        # 3. Descomprimir
-        if not descomprimir_xml():
-            logger.error("❌ Falha na descompressão - processo abortado")
-            return False
-        
-        # 4. Processar XML
-        if not processar_xml(offset_seconds):
-            logger.error("❌ Falha no processamento - processo abortado")
-            return False
-        
-        # 5. Comprimir resultado final
-        if not comprimir_xml():
-            logger.error("❌ Falha na compressão - processo abortado")
-            return False
-        
-        # 6. Verificar ficheiros finais
-        if not verificar_ficheiros_finais():
-            logger.error("❌ Falha na verificação final - processo abortado")
-            return False
-        
-        # 7. Atualizar configuração com último processamento
-        config['last_update'] = datetime.now().isoformat()
-        config['last_offset_used'] = offset_seconds
-        guardar_configuracao(config)
-        
-        # 8. Limpar ficheiros temporários
-        limpar_ficheiros_temporarios()
-        
-        logger.info("🎉 Processo concluído com sucesso!")
-        logger.info(f"📁 Ficheiros finais criados com offset de {offset_seconds:+d}s:")
-        logger.info("   - compilacao.xml")
-        logger.info("   - compilacao.xml.gz")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Erro geral no processamento: {e}")
-        limpar_ficheiros_temporarios()
-        return False
-
-if __name__ == "__main__":
-    sucesso = main()
-    sys.exit(0 if sucesso else 1)
+        logger.info(f"🎯 Usando offset da configur
