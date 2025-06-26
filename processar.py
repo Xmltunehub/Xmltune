@@ -415,4 +415,60 @@ def main():
         logger.info(f"🎯 Usando offset da linha de comando: {offset_seconds}s")
     else:
         offset_seconds = config['offset_seconds']
-        logger.info(f"🎯 Usando offset da configur
+        logger.info(f"🎯 Usando offset da configuração: {offset_seconds}s")
+    
+    # Limpar ficheiros anteriores
+    limpar_ficheiros_temporarios()
+    
+    try:
+        # 1. Download
+        if not fazer_download(config['source_url']):
+            logger.error("❌ Falha no download. Abortando.")
+            return False
+        
+        # 2. Descompressão
+        if not descomprimir_xml():
+            logger.error("❌ Falha na descompressão. Abortando.")
+            return False
+        
+        # 3. Processamento
+        if not processar_xml(offset_seconds):
+            logger.error("❌ Falha no processamento. Abortando.")
+            return False
+        
+        # 4. Compressão
+        if not comprimir_xml():
+            logger.error("❌ Falha na compressão. Abortando.")
+            return False
+        
+        # 5. Verificação final
+        if not verificar_ficheiros_finais():
+            logger.error("❌ Falha na verificação final. Abortando.")
+            return False
+        
+        # Atualizar configuração com timestamp
+        config['last_update'] = datetime.now().isoformat()
+        guardar_configuracao(config)
+        
+        # Limpeza final
+        limpar_ficheiros_temporarios()
+        
+        logger.info("🎉 Processamento EPG concluído com sucesso!")
+        logger.info(f"📁 Ficheiro final: compilacao.xml.gz")
+        logger.info(f"⏰ Offset aplicado: {offset_seconds} segundos")
+        
+        return True
+        
+    except KeyboardInterrupt:
+        logger.info("❌ Processamento interrompido pelo utilizador")
+        return False
+    except Exception as e:
+        logger.error(f"❌ Erro inesperado: {e}")
+        return False
+    finally:
+        # Garantir limpeza dos ficheiros temporários
+        limpar_ficheiros_temporarios()
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)
