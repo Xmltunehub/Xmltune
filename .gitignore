@@ -1,9 +1,38 @@
-# Ignorar ficheiros temporários e caches
+# Python
 __pycache__/
-*.pyc
+*.py[cod]
 *.pyo
 *.pyd
+*.so
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
 
-# Permitir especificamente os ficheiros gerados
+# Ficheiros temporários do processamento EPG
+origem.xml
+origem.xml.gz
+*.tmp
+*.temp
+
+# Logs
+*.log
+logs/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Sistema
+.DS_Store
+Thumbs.db
+
+# Permitir explicitamente os ficheiros gerados finais
 !compilacao.xml
 !compilacao.xml.gz
+!config.json
