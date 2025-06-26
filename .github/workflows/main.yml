@@ -1,200 +1,196 @@
-# .github/workflows/main.yml
-name: EPG Update Workflow
+name: Processar EPG Automático
 
 on:
+  schedule:
+    - cron: '0 4 * * *'  # 04:00 UTC diário (05:00 Portugal)
   workflow_dispatch:
     inputs:
       offset_seconds:
-        description: 'Offset em segundos (+/-)'
+        description: 'Offset em segundos (+30, -30, etc.)'
         required: false
-        default: '0'
+        default: ''
         type: string
       update_default:
-        description: 'Atualizar configuração padrão'
+        description: 'Atualizar offset padrão permanentemente?'
         required: false
         default: false
         type: boolean
-  schedule:
-    - cron: '0 */4 * * *'  # A cada 4 horas
 
 jobs:
-  update-epg:
+  process-epg:
     runs-on: ubuntu-latest
     
     steps:
-    - name: 📥 Checkout do repositório
-      uses: actions/checkout@v4
-      with:
-        fetch-depth: 0  # Fetch completo do histórico
-        token: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: ⚙️ Configurar Git
-      run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "github-actions[bot]"
-        git config --local pull.rebase false  # Usar merge em vez de rebase
-    
-    - name: 🔄 Sincronizar com remote (com retry)
-      run: |
-        echo "🔄 A sincronizar com o repositório remoto..."
-        
-        # Função de retry
-        retry_pull() {
-          local max_attempts=5
-          local attempt=1
+      - name: 📥 Checkout repositório
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          fetch-depth: 0
+
+      - name: ⚙️ Configurar Git
+        run: |
+          git config --local user.name 'xmltune-bot[bot]'
+          git config --local user.email 'xmltune-bot@users.noreply.github.com'
+
+      - name: 🔄 Sincronizar com remote
+        run: |
+          echo "🔄 Sincronizando com repositório remoto..."
+          git pull origin main --no-edit || echo "⚠️ Pull falhou, continuando..."
+
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: 📦 Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: 🎯 Processar EPG
+        run: |
+          echo "🚀 Iniciando processamento EPG..."
           
-          while [ $attempt -le $max_attempts ]; do
-            echo "🔄 Tentativa $attempt de $max_attempts..."
-            
-            # Stash qualquer mudança local
-            git stash push -m "Auto-stash before pull" || true
-            
-            # Pull das mudanças remotas
-            if git pull origin main --no-edit; then
-              echo "✅ Pull realizado com sucesso!"
-              
-              # Restaurar stash se existir
-              if git stash list | grep -q "Auto-stash before pull"; then
-                git stash pop || echo "⚠️ Aviso: Não foi possível restaurar stash"
-              fi
-              
-              return 0
+          if [ "${{ github.event.inputs.offset_seconds }}" != "" ]; then
+            echo "📱 Usando offset da App/Manual: ${{ github.event.inputs.offset_seconds }}s"
+            python processar.py --offset ${{ github.event.inputs.offset_seconds }}
+          else
+            echo "⚙️ Usando offset da configuração padrão"
+            python processar.py --config
+          fi
+          
+          echo "✅ Processamento concluído"
+
+      - name: 📝 Atualizar offset padrão
+        if: ${{ github.event.inputs.update_default == 'true' && github.event.inputs.offset_seconds != '' }}
+        run: |
+          echo "🔧 Definindo novo offset padrão: ${{ github.event.inputs.offset_seconds }}s"
+          python processar.py --set-offset ${{ github.event.inputs.offset_seconds }}
+
+      - name: 🔍 Verificar ficheiros gerados
+        run: |
+          if [ ! -f "compilacao.xml.gz" ]; then
+            echo "❌ Erro: compilacao.xml.gz não foi criado"
+            exit 1
+          fi
+          
+          if [ ! -f "compilacao.xml" ]; then
+            echo "❌ Erro: compilacao.xml não foi criado"
+            exit 1
+          fi
+          
+          echo "📊 Informações dos ficheiros gerados:"
+          ls -lh compilacao.xml*
+          
+          # Mostrar configuração atual
+          if [ -f "config.json" ]; then
+            echo "⚙️ Configuração atual:"
+            cat config.json | python -m json.tool
+          fi
+          
+          echo "✅ Ficheiros criados com sucesso"
+
+      - name: 📋 Preparar informações do commit
+        id: commit_info
+        run: |
+          # Determinar offset usado
+          if [ "${{ github.event.inputs.offset_seconds }}" != "" ]; then
+            OFFSET="${{ github.event.inputs.offset_seconds }}"
+            SOURCE="App/Manual"
+          else
+            # Extrair offset do config.json se existir
+            if [ -f "config.json" ]; then
+              OFFSET=$(python -c "import json; print(json.load(open('config.json'))['offset_seconds'])" 2>/dev/null || echo "30")
+              SOURCE="Config"
             else
-              echo "⚠️ Pull falhou na tentativa $attempt"
-              sleep $((attempt * 5))  # Esperar mais tempo a cada tentativa
-              attempt=$((attempt + 1))
+              OFFSET="30"
+              SOURCE="Padrão"
             fi
-          done
+          fi
           
-          echo "❌ Falha ao sincronizar após $max_attempts tentativas"
-          return 1
-        }
-        
-        retry_pull
-    
-    - name: 🐍 Setup Python
-      uses: actions/setup-python@v4
-      with:
-        python-version: '3.x'
-    
-    - name: 📦 Instalar dependências
-      run: |
-        python -m pip install --upgrade pip
-        # Adicionar as tuas dependências aqui
-        # pip install -r requirements.txt
-    
-    - name: 🎯 Processar EPG
-      run: |
-        echo "🎯 A processar EPG com offset: ${{ github.event.inputs.offset_seconds || '0' }}s"
-        
-        # O teu script de processamento aqui
-        # python process_epg.py --offset=${{ github.event.inputs.offset_seconds || '0' }}
-        
-        # Para demonstração, criar um ficheiro de teste
-        echo "EPG processado em $(date) com offset ${{ github.event.inputs.offset_seconds || '0' }}s" > epg_update.log
-    
-    - name: 💾 Commit e Push (com proteção contra conflitos)
-      run: |
-        echo "💾 A verificar alterações..."
-        
-        # Verificar se há alterações
-        if git diff --quiet && git diff --staged --quiet; then
-          echo "ℹ️ Nenhuma alteração detetada - a saltar commit"
-          exit 0
-        fi
-        
-        echo "📝 Alterações detetadas - a preparar commit..."
-        
-        # Função para commit com retry
-        safe_commit_push() {
-          local max_attempts=3
-          local attempt=1
+          # Formatar offset para exibição
+          if [ "$OFFSET" -gt 0 ]; then
+            OFFSET_STR="+${OFFSET}s"
+          else
+            OFFSET_STR="${OFFSET}s"
+          fi
           
-          while [ $attempt -le $max_attempts ]; do
-            echo "📝 Tentativa de commit e push $attempt de $max_attempts..."
+          # Criar mensagem de commit
+          COMMIT_MSG="EPG atualizado (${OFFSET_STR}) - $(date -u '+%Y-%m-%d %H:%M UTC') [${SOURCE}]"
+          
+          echo "commit_message=${COMMIT_MSG}" >> $GITHUB_OUTPUT
+          echo "offset_used=${OFFSET}" >> $GITHUB_OUTPUT
+          echo "offset_display=${OFFSET_STR}" >> $GITHUB_OUTPUT
+
+      - name: 💾 Commit e Push
+        run: |
+          # Adicionar ficheiros gerados
+          git add compilacao.xml compilacao.xml.gz
+          
+          # Adicionar config.json se foi modificado
+          if [ -f "config.json" ]; then
+            git add config.json
+          fi
+          
+          # Verificar se há alterações
+          if git diff --cached --quiet; then
+            echo "📝 Sem alterações nos ficheiros - fonte não foi atualizada"
+            exit 0
+          fi
+
+          echo "📝 Alterações detetadas - fazendo commit..."
+          echo "💬 Mensagem: ${{ steps.commit_info.outputs.commit_message }}"
+          
+          git commit -m "${{ steps.commit_info.outputs.commit_message }}"
+          
+          # Push com retry
+          max_attempts=3
+          for attempt in $(seq 1 $max_attempts); do
+            echo "🔄 Push - tentativa $attempt/$max_attempts"
             
-            # Sincronizar novamente antes do commit
-            git stash push -m "Pre-commit stash" || true
-            
-            if git pull origin main --no-edit; then
-              # Restaurar stash
-              if git stash list | grep -q "Pre-commit stash"; then
-                if ! git stash pop; then
-                  echo "⚠️ Conflito no stash - a resolver automaticamente"
-                  git reset --hard HEAD
-                  git stash drop || true
-                fi
-              fi
-              
-              # Adicionar alterações
-              git add .
-              
-              # Commit se há alterações
-              if ! git diff --staged --quiet; then
-                git commit -m "EPG atualizado - $(date -u '+%Y-%m-%d %H:%M') UTC
-                
-                Offset aplicado: ${{ github.event.inputs.offset_seconds || '0' }}s
-                Workflow: ${{ github.run_id }}
-                Triggered by: ${{ github.event_name }}"
-                
-                # Push com retry
-                if git push origin main; then
-                  echo "✅ Push realizado com sucesso!"
-                  return 0
-                else
-                  echo "⚠️ Push falhou na tentativa $attempt"
-                fi
+            if git push origin main; then
+              echo "✅ Push bem-sucedido na tentativa $attempt"
+              echo "🎯 Offset aplicado: ${{ steps.commit_info.outputs.offset_display }}"
+              break
+            else
+              echo "⚠️ Push falhou na tentativa $attempt"
+              if [ $attempt -lt $max_attempts ]; then
+                echo "🔄 Tentando novamente em 10 segundos..."
+                sleep 10
+                git pull --rebase origin main || git pull --no-edit origin main
               else
-                echo "ℹ️ Nenhuma alteração para commit após merge"
-                return 0
+                echo "❌ Falha definitiva no push após $max_attempts tentativas"
+                exit 1
               fi
-            else
-              echo "⚠️ Pull falhou na tentativa $attempt"
             fi
-            
-            attempt=$((attempt + 1))
-            sleep $((attempt * 3))
           done
+
+      - name: 📊 Resumo da execução
+        if: always()
+        run: |
+          echo "## 📋 Resumo da Execução EPG" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| **Offset aplicado** | ${{ steps.commit_info.outputs.offset_display }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Data/Hora** | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Workflow ID** | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| **Trigger** | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
           
-          echo "❌ Falha no commit/push após $max_attempts tentativas"
-          return 1
-        }
-        
-        safe_commit_push
-    
-    - name: 📊 Atualizar configuração padrão
-      if: ${{ github.event.inputs.update_default == 'true' }}
-      run: |
-        echo "📊 A atualizar configuração padrão..."
-        
-        # Criar/atualizar config.json
-        cat > config.json << EOF
-        {
-          "default_offset": ${{ github.event.inputs.offset_seconds || '0' }},
-          "last_updated": "$(date -u -Iseconds)",
-          "updated_by": "github-actions[bot]",
-          "workflow_run": "${{ github.run_id }}"
-        }
-        EOF
-        
-        # Commit da configuração
-        git add config.json
-        if ! git diff --staged --quiet; then
-          git commit -m "Configuração padrão atualizada - offset: ${{ github.event.inputs.offset_seconds || '0' }}s"
-          git push origin main || echo "⚠️ Aviso: Push da configuração falhou"
-        fi
-    
-    - name: 📢 Notificação de sucesso
-      if: success()
-      run: |
-        echo "🎉 Workflow concluído com sucesso!"
-        echo "⏰ Offset aplicado: ${{ github.event.inputs.offset_seconds || '0' }}s"
-        echo "🕐 Timestamp: $(date -u)"
-        echo "🔗 Run ID: ${{ github.run_id }}"
-    
-    - name: 📢 Notificação de erro
-      if: failure()
-      run: |
-        echo "❌ Workflow falhou!"
-        echo "🔍 Verificar logs para mais detalhes"
-        echo "🔗 Run ID: ${{ github.run_id }}"
+          if [ -f "compilacao.xml.gz" ]; then
+            SIZE=$(ls -lh compilacao.xml.gz | awk '{print $5}')
+            echo "| **Ficheiro .gz** | ${SIZE} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          if [ -f "compilacao.xml" ]; then
+            SIZE=$(ls -lh compilacao.xml | awk '{print $5}')
+            echo "| **Ficheiro .xml** | ${SIZE} |" >> $GITHUB_STEP_SUMMARY
+          fi
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -f "compilacao.xml.gz" ] && [ -f "compilacao.xml" ]; then
+            echo "✅ **Status:** Processamento concluído com sucesso" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "❌ **Status:** Erro no processamento" >> $GITHUB_STEP_SUMMARY
+          fi
