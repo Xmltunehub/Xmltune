@@ -16,6 +16,9 @@ on:
         default: false
         type: boolean
 
+permissions:
+  contents: write
+
 jobs:
   process-epg:
     runs-on: ubuntu-latest
@@ -41,11 +44,18 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+          cache: 'pip'
 
       - name: 📦 Instalar dependências
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
+      - name: 🧹 Limpeza prévia
+        run: |
+          echo "🧹 Removendo ficheiros temporários antigos..."
+          rm -f origem.xml origem.xml.gz *.tmp *.temp
+          echo "✅ Limpeza concluída"
 
       - name: 🎯 Processar EPG
         run: |
@@ -82,13 +92,19 @@ jobs:
           echo "📊 Informações dos ficheiros gerados:"
           ls -lh compilacao.xml*
           
+          # Verificar integridade do .gz
+          if ! gzip -t compilacao.xml.gz; then
+            echo "❌ Erro: compilacao.xml.gz está corrompido"
+            exit 1
+          fi
+          
           # Mostrar configuração atual
           if [ -f "config.json" ]; then
             echo "⚙️ Configuração atual:"
             cat config.json | python -m json.tool
           fi
           
-          echo "✅ Ficheiros criados com sucesso"
+          echo "✅ Ficheiros criados e verificados com sucesso"
 
       - name: 📋 Preparar informações do commit
         id: commit_info
@@ -143,8 +159,8 @@ jobs:
           
           git commit -m "${{ steps.commit_info.outputs.commit_message }}"
           
-          # Push com retry
-          max_attempts=3
+          # Push com retry melhorado
+          max_attempts=5
           for attempt in $(seq 1 $max_attempts); do
             echo "🔄 Push - tentativa $attempt/$max_attempts"
             
@@ -155,15 +171,23 @@ jobs:
             else
               echo "⚠️ Push falhou na tentativa $attempt"
               if [ $attempt -lt $max_attempts ]; then
-                echo "🔄 Tentando novamente em 10 segundos..."
-                sleep 10
-                git pull --rebase origin main || git pull --no-edit origin main
+                echo "🔄 Tentando novamente em 15 segundos..."
+                sleep 15
+                # Tentar pull com estratégia de merge
+                git pull --no-edit origin main || git pull --rebase origin main || true
               else
                 echo "❌ Falha definitiva no push após $max_attempts tentativas"
                 exit 1
               fi
             fi
           done
+
+      - name: 🧹 Limpeza final
+        if: always()
+        run: |
+          echo "🧹 Removendo ficheiros temporários..."
+          rm -f origem.xml origem.xml.gz *.tmp *.temp
+          echo "✅ Limpeza final concluída"
 
       - name: 📊 Resumo da execução
         if: always()
@@ -191,6 +215,10 @@ jobs:
           
           if [ -f "compilacao.xml.gz" ] && [ -f "compilacao.xml" ]; then
             echo "✅ **Status:** Processamento concluído com sucesso" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### 🔗 Ficheiros disponíveis:" >> $GITHUB_STEP_SUMMARY
+            echo "- [compilacao.xml](https://raw.githubusercontent.com/${{ github.repository }}/main/compilacao.xml)" >> $GITHUB_STEP_SUMMARY
+            echo "- [compilacao.xml.gz](https://raw.githubusercontent.com/${{ github.repository }}/main/compilacao.xml.gz)" >> $GITHUB_STEP_SUMMARY
           else
             echo "❌ **Status:** Erro no processamento" >> $GITHUB_STEP_SUMMARY
           fi
