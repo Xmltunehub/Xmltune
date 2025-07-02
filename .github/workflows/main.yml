@@ -1,224 +1,470 @@
-name: Processar EPG Automático
-
+name: Processar EPG
 on:
-  schedule:
-    - cron: '0 4 * * *'  # 04:00 UTC diário (05:00 Portugal)
+  # Trigger manual via workflow_dispatch
   workflow_dispatch:
     inputs:
       offset_seconds:
-        description: 'Offset em segundos (+30, -30, etc.)'
+        description: 'Offset em segundos (pode ser negativo)'
         required: false
-        default: ''
+        default: '30'
         type: string
-      update_default:
-        description: 'Atualizar offset padrão permanentemente?'
+      force_update:
+        description: 'Forçar atualização mesmo se já processado hoje'
         required: false
         default: false
         type: boolean
 
-permissions:
-  contents: write
+  # Trigger automático diário às 06:00 UTC
+  schedule:
+    - cron: '0 6 * * *'
+
+  # Trigger quando há push de ficheiros de configuração na raiz
+  push:
+    paths:
+      - '*.m3u'
+      - '*.xml'
+      - 'runworkflow'
+      - 'config.json'
+    branches:
+      - main
 
 jobs:
-  process-epg:
+  processar-epg:
     runs-on: ubuntu-latest
     
     steps:
-      - name: 📥 Checkout repositório
-        uses: actions/checkout@v4
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          fetch-depth: 0
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
 
-      - name: ⚙️ Configurar Git
-        run: |
-          git config --local user.name 'xmltune-bot[bot]'
-          git config --local user.email 'xmltune-bot@users.noreply.github.com'
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
 
-      - name: 🔄 Sincronizar com remote
-        run: |
-          echo "🔄 Sincronizando com repositório remoto..."
-          git pull origin main --no-edit || echo "⚠️ Pull falhou, continuando..."
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests lxml python-dateutil
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-          cache: 'pip'
+    - name: Verificar se processar.py existe
+      run: |
+        if [ ! -f "processar.py" ]; then
+          echo "❌ Erro: processar.py não encontrado!"
+          exit 1
+        fi
+        echo "✅ processar.py encontrado"
 
-      - name: 📦 Instalar dependências
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-
-      - name: 🧹 Limpeza prévia
-        run: |
-          echo "🧹 Removendo ficheiros temporários antigos..."
-          rm -f origem.xml origem.xml.gz *.tmp *.temp
-          echo "✅ Limpeza concluída"
-
-      - name: 🎯 Processar EPG
-        run: |
-          echo "🚀 Iniciando processamento EPG..."
-          
-          if [ "${{ github.event.inputs.offset_seconds }}" != "" ]; then
-            echo "📱 Usando offset da App/Manual: ${{ github.event.inputs.offset_seconds }}s"
-            python processar.py --offset ${{ github.event.inputs.offset_seconds }}
-          else
-            echo "⚙️ Usando offset da configuração padrão"
-            python processar.py --config
-          fi
-          
-          echo "✅ Processamento concluído"
-
-      - name: 📝 Atualizar offset padrão
-        if: ${{ github.event.inputs.update_default == 'true' && github.event.inputs.offset_seconds != '' }}
-        run: |
-          echo "🔧 Definindo novo offset padrão: ${{ github.event.inputs.offset_seconds }}s"
-          python processar.py --set-offset ${{ github.event.inputs.offset_seconds }}
-
-      - name: 🔍 Verificar ficheiros gerados
-        run: |
-          if [ ! -f "compilacao.xml.gz" ]; then
-            echo "❌ Erro: compilacao.xml.gz não foi criado"
-            exit 1
-          fi
-          
-          if [ ! -f "compilacao.xml" ]; then
-            echo "❌ Erro: compilacao.xml não foi criado"
-            exit 1
-          fi
-          
-          echo "📊 Informações dos ficheiros gerados:"
-          ls -lh compilacao.xml*
-          
-          # Verificar integridade do .gz
-          if ! gzip -t compilacao.xml.gz; then
-            echo "❌ Erro: compilacao.xml.gz está corrompido"
-            exit 1
-          fi
-          
-          # Mostrar configuração atual
+    - name: Determinar offset a usar
+      id: offset
+      run: |
+        # Prioridade: 1) Input manual, 2) Arquivo config.json, 3) Padrão
+        OFFSET="${{ github.event.inputs.offset_seconds }}"
+        
+        if [ -z "$OFFSET" ] || [ "$OFFSET" = "" ]; then
           if [ -f "config.json" ]; then
-            echo "⚙️ Configuração atual:"
-            cat config.json | python -m json.tool
-          fi
-          
-          echo "✅ Ficheiros criados e verificados com sucesso"
-
-      - name: 📋 Preparar informações do commit
-        id: commit_info
-        run: |
-          # Determinar offset usado
-          if [ "${{ github.event.inputs.offset_seconds }}" != "" ]; then
-            OFFSET="${{ github.event.inputs.offset_seconds }}"
-            SOURCE="App/Manual"
+            OFFSET=$(python -c "
+import json
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    print(config.get('offset_seconds', 30))
+except:
+    print(30)
+" 2>/dev/null || echo "30")
           else
-            # Extrair offset do config.json se existir
-            if [ -f "config.json" ]; then
-              OFFSET=$(python -c "import json; print(json.load(open('config.json'))['offset_seconds'])" 2>/dev/null || echo "30")
-              SOURCE="Config"
-            else
-              OFFSET="30"
-              SOURCE="Padrão"
-            fi
+            OFFSET="30"
           fi
-          
-          # Formatar offset para exibição
-          if [ "$OFFSET" -gt 0 ]; then
-            OFFSET_STR="+${OFFSET}s"
-          else
-            OFFSET_STR="${OFFSET}s"
-          fi
-          
-          # Criar mensagem de commit
-          COMMIT_MSG="EPG atualizado (${OFFSET_STR}) - $(date -u '+%Y-%m-%d %H:%M UTC') [${SOURCE}]"
-          
-          echo "commit_message=${COMMIT_MSG}" >> $GITHUB_OUTPUT
-          echo "offset_used=${OFFSET}" >> $GITHUB_OUTPUT
-          echo "offset_display=${OFFSET_STR}" >> $GITHUB_OUTPUT
+        fi
+        
+        echo "offset=$OFFSET" >> $GITHUB_OUTPUT
+        echo "🎯 Offset determinado: $OFFSET segundos"
 
-      - name: 💾 Commit e Push
-        run: |
-          # Adicionar ficheiros gerados
-          git add compilacao.xml compilacao.xml.gz
+    - name: Verificar última execução
+      id: check_last_run
+      run: |
+        FORCE_UPDATE="${{ github.event.inputs.force_update }}"
+        TODAY=$(date +%Y-%m-%d)
+        SKIP_EXECUTION=false
+        
+        if [ -f "config.json" ] && [ "$FORCE_UPDATE" != "true" ]; then
+          LAST_UPDATE=$(python -c "
+import json
+from datetime import datetime
+try:
+    with open('config.json', 'r') as f:
+        config = json.load(f)
+    last_update = config.get('last_update', '')
+    if last_update:
+        date_part = last_update.split('T')[0]
+        print(date_part)
+    else:
+        print('')
+except:
+    print('')
+" 2>/dev/null || echo "")
           
-          # Adicionar config.json se foi modificado
-          if [ -f "config.json" ]; then
-            git add config.json
+          if [ "$LAST_UPDATE" = "$TODAY" ]; then
+            echo "⏭️ EPG já processado hoje ($TODAY). Use force_update=true para forçar."
+            SKIP_EXECUTION=true
           fi
-          
-          # Verificar se há alterações
-          if git diff --cached --quiet; then
-            echo "📝 Sem alterações nos ficheiros - fonte não foi atualizada"
-            exit 0
-          fi
+        fi
+        
+        echo "skip_execution=$SKIP_EXECUTION" >> $GITHUB_OUTPUT
+        echo "last_update=$LAST_UPDATE" >> $GITHUB_OUTPUT
 
-          echo "📝 Alterações detetadas - fazendo commit..."
-          echo "💬 Mensagem: ${{ steps.commit_info.outputs.commit_message }}"
+    - name: Executar processamento EPG
+      if: steps.check_last_run.outputs.skip_execution != 'true'
+      run: |
+        echo "🚀 Iniciando processamento EPG..."
+        echo "⏰ Offset: ${{ steps.offset.outputs.offset }} segundos"
+        echo "📅 Data/Hora: $(date)"
+        
+        # Executar o script principal
+        python processar.py --offset ${{ steps.offset.outputs.offset }}
+        
+        # Verificar se os arquivos foram gerados
+        if [ ! -f "compilacao.xml" ]; then
+          echo "❌ Erro: compilacao.xml não foi gerado!"
+          exit 1
+        fi
+        
+        if [ ! -f "compilacao.xml.gz" ]; then
+          echo "❌ Erro: compilacao.xml.gz não foi gerado!"
+          exit 1
+        fi
+        
+        # Mostrar informações dos arquivos gerados
+        echo "✅ Arquivos gerados com sucesso:"
+        ls -lh compilacao.xml*
+        
+        # Verificar integridade do arquivo comprimido
+        if ! gunzip -t compilacao.xml.gz; then
+          echo "❌ Erro: compilacao.xml.gz está corrompido!"
+          exit 1
+        fi
+        echo "✅ Integridade do arquivo comprimido verificada"
+
+    - name: Processar match M3U com EPG
+      if: steps.check_last_run.outputs.skip_execution != 'true'
+      run: |
+        # Procurar por arquivos M3U na raiz
+        M3U_FILES=$(find . -maxdepth 1 -name "*.m3u" -type f)
+        
+        if [ -n "$M3U_FILES" ]; then
+          echo "📺 Arquivos M3U encontrados para processamento:"
+          echo "$M3U_FILES"
           
-          git commit -m "${{ steps.commit_info.outputs.commit_message }}"
+          # Criar backup dos M3U com timestamp
+          TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+          mkdir -p backups
           
-          # Push com retry melhorado
-          max_attempts=5
-          for attempt in $(seq 1 $max_attempts); do
-            echo "🔄 Push - tentativa $attempt/$max_attempts"
+          # Criar script Python para processar match M3U + EPG
+          cat > processar_match.py << 'EOF'
+import re
+import sys
+from lxml import etree
+import os
+
+def extrair_canais_m3u(arquivo_m3u):
+    """Extrai canais do arquivo M3U"""
+    canais = []
+    try:
+        with open(arquivo_m3u, 'r', encoding='utf-8') as f:
+            conteudo = f.read()
+        
+        # Encontrar entradas EXTINF
+        padrao = r'#EXTINF:.*?tvg-id="([^"]*)".*?tvg-name="([^"]*)".*?,(.*?)(?=\n[^#]|\nhttp|\n#|\Z)'
+        matches = re.findall(padrao, conteudo, re.DOTALL | re.IGNORECASE)
+        
+        for tvg_id, tvg_name, nome_canal in matches:
+            canal = {
+                'tvg_id': tvg_id.strip(),
+                'tvg_name': tvg_name.strip(),
+                'nome': nome_canal.strip()
+            }
+            canais.append(canal)
+        
+        print(f"✅ Extraídos {len(canais)} canais do M3U")
+        return canais
+    except Exception as e:
+        print(f"❌ Erro ao processar M3U: {e}")
+        return []
+
+def extrair_canais_epg(arquivo_xml):
+    """Extrai IDs de canais do EPG"""
+    try:
+        tree = etree.parse(arquivo_xml)
+        root = tree.getroot()
+        
+        canais_epg = {}
+        for channel in root.findall('channel'):
+            channel_id = channel.get('id', '')
+            display_name = ''
             
-            if git push origin main; then
-              echo "✅ Push bem-sucedido na tentativa $attempt"
-              echo "🎯 Offset aplicado: ${{ steps.commit_info.outputs.offset_display }}"
-              break
-            else
-              echo "⚠️ Push falhou na tentativa $attempt"
-              if [ $attempt -lt $max_attempts ]; then
-                echo "🔄 Tentando novamente em 15 segundos..."
-                sleep 15
-                # Tentar pull com estratégia de merge
-                git pull --no-edit origin main || git pull --rebase origin main || true
-              else
-                echo "❌ Falha definitiva no push após $max_attempts tentativas"
-                exit 1
-              fi
-            fi
-          done
+            # Procurar display-name
+            display_elem = channel.find('display-name')
+            if display_elem is not None:
+                display_name = display_elem.text or ''
+            
+            canais_epg[channel_id] = display_name.strip()
+        
+        print(f"✅ Encontrados {len(canais_epg)} canais no EPG")
+        return canais_epg
+    except Exception as e:
+        print(f"❌ Erro ao processar EPG: {e}")
+        return {}
 
-      - name: 🧹 Limpeza final
-        if: always()
-        run: |
-          echo "🧹 Removendo ficheiros temporários..."
-          rm -f origem.xml origem.xml.gz *.tmp *.temp
-          echo "✅ Limpeza final concluída"
+def criar_epg_personalizado(canais_m3u, canais_epg, arquivo_epg_original, arquivo_saida):
+    """Cria EPG personalizado com apenas os canais da lista M3U"""
+    try:
+        # Parse do EPG original
+        tree = etree.parse(arquivo_epg_original)
+        root = tree.getroot()
+        
+        # IDs dos canais que queremos manter
+        ids_desejados = set()
+        matches_encontrados = 0
+        
+        for canal_m3u in canais_m3u:
+            tvg_id = canal_m3u['tvg_id']
+            if tvg_id and tvg_id in canais_epg:
+                ids_desejados.add(tvg_id)
+                matches_encontrados += 1
+        
+        print(f"🎯 Matches encontrados: {matches_encontrados}/{len(canais_m3u)}")
+        
+        if not ids_desejados:
+            print("⚠️ Nenhum match encontrado - mantendo EPG original")
+            return False
+        
+        # Remover canais não desejados
+        for channel in root.findall('channel'):
+            channel_id = channel.get('id', '')
+            if channel_id not in ids_desejados:
+                root.remove(channel)
+        
+        # Remover programas de canais não desejados
+        for programme in root.findall('programme'):
+            channel_id = programme.get('channel', '')
+            if channel_id not in ids_desejados:
+                root.remove(programme)
+        
+        # Guardar EPG personalizado
+        tree.write(arquivo_saida, encoding='utf-8', xml_declaration=True, pretty_print=True)
+        
+        # Verificar resultado
+        canais_finais = len(root.findall('channel'))
+        programas_finais = len(root.findall('programme'))
+        
+        print(f"✅ EPG personalizado criado:")
+        print(f"   - Canais: {canais_finais}")
+        print(f"   - Programas: {programas_finais}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao criar EPG personalizado: {e}")
+        return False
 
-      - name: 📊 Resumo da execução
-        if: always()
-        run: |
-          echo "## 📋 Resumo da Execução EPG" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Campo | Valor |" >> $GITHUB_STEP_SUMMARY
-          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| **Offset aplicado** | ${{ steps.commit_info.outputs.offset_display }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Data/Hora** | $(date -u '+%Y-%m-%d %H:%M UTC') |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Workflow ID** | ${{ github.run_id }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| **Trigger** | ${{ github.event_name }} |" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "compilacao.xml.gz" ]; then
-            SIZE=$(ls -lh compilacao.xml.gz | awk '{print $5}')
-            echo "| **Ficheiro .gz** | ${SIZE} |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
+# Processar cada arquivo M3U
+if __name__ == "__main__":
+    import glob
+    
+    arquivos_m3u = glob.glob("*.m3u")
+    epg_original = "compilacao.xml"
+    
+    if not os.path.exists(epg_original):
+        print(f"❌ EPG original não encontrado: {epg_original}")
+        sys.exit(1)
+    
+    for arquivo_m3u in arquivos_m3u:
+        print(f"\n🔄 Processando: {arquivo_m3u}")
+        
+        # Extrair canais
+        canais_m3u = extrair_canais_m3u(arquivo_m3u)
+        if not canais_m3u:
+            continue
+        
+        canais_epg = extrair_canais_epg(epg_original)
+        if not canais_epg:
+            continue
+        
+        # Nome do arquivo de saída baseado no M3U
+        nome_base = os.path.splitext(arquivo_m3u)[0]
+        arquivo_saida = f"{nome_base}_epg.xml"
+        
+        # Criar EPG personalizado
+        if criar_epg_personalizado(canais_m3u, canais_epg, epg_original, arquivo_saida):
+            print(f"✅ Criado: {arquivo_saida}")
+        else:
+            print(f"❌ Falha ao criar EPG para {arquivo_m3u}")
+EOF
+
+          # Executar processamento do match
           if [ -f "compilacao.xml" ]; then
-            SIZE=$(ls -lh compilacao.xml | awk '{print $5}')
-            echo "| **Ficheiro .xml** | ${SIZE} |" >> $GITHUB_STEP_SUMMARY
-          fi
-          
-          echo "" >> $GITHUB_STEP_SUMMARY
-          
-          if [ -f "compilacao.xml.gz" ] && [ -f "compilacao.xml" ]; then
-            echo "✅ **Status:** Processamento concluído com sucesso" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### 🔗 Ficheiros disponíveis:" >> $GITHUB_STEP_SUMMARY
-            echo "- [compilacao.xml](https://raw.githubusercontent.com/${{ github.repository }}/main/compilacao.xml)" >> $GITHUB_STEP_SUMMARY
-            echo "- [compilacao.xml.gz](https://raw.githubusercontent.com/${{ github.repository }}/main/compilacao.xml.gz)" >> $GITHUB_STEP_SUMMARY
+            echo "🔄 Executando match M3U + EPG..."
+            python processar_match.py
+            
+            # Criar backups após processamento
+            for m3u_file in $M3U_FILES; do
+              if [ -f "$m3u_file" ]; then
+                filename=$(basename "$m3u_file")
+                cp "$m3u_file" "backups/${filename}_${TIMESTAMP}"
+                echo "✅ Backup criado: backups/${filename}_${TIMESTAMP}"
+              fi
+            done
           else
-            echo "❌ **Status:** Erro no processamento" >> $GITHUB_STEP_SUMMARY
+            echo "⚠️ compilacao.xml não existe - pulando match"
           fi
+          
+          # Limpar script temporário
+          rm -f processar_match.py
+        else
+          echo "ℹ️ Nenhum arquivo M3U encontrado na raiz"
+        fi
+
+    - name: Remover arquivo runworkflow se existir
+      if: steps.check_last_run.outputs.skip_execution != 'true'
+      run: |
+        if [ -f "runworkflow" ]; then
+          echo "🗑️ Removendo arquivo trigger 'runworkflow'"
+          rm runworkflow
+        fi
+
+    - name: Commit e push dos resultados
+      if: steps.check_last_run.outputs.skip_execution != 'true'
+      run: |
+        # Configurar git
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Adicionar arquivos gerados (incluindo EPGs personalizados)
+        git add compilacao.xml compilacao.xml.gz config.json
+        git add *_epg.xml 2>/dev/null || true
+        
+        # Adicionar backups se existirem
+        if [ -d "backups" ]; then
+          git add backups/
+        fi
+        
+        # Remover runworkflow do git se existir
+        if git ls-files --error-unmatch runworkflow > /dev/null 2>&1; then
+          git rm runworkflow
+        fi
+        
+        # Verificar se há mudanças para commit
+        if git diff --staged --quiet; then
+          echo "ℹ️ Nenhuma mudança para commit"
+        else
+          # Criar mensagem de commit informativa
+          TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S UTC')
+          OFFSET="${{ steps.offset.outputs.offset }}"
+          
+          COMMIT_MSG="🤖 EPG processado automaticamente
+
+📅 Data: $TIMESTAMP
+⏰ Offset: ${OFFSET}s
+🔄 Trigger: ${{ github.event_name }}
+📊 Status: ✅ Sucesso"
+
+          git commit -m "$COMMIT_MSG"
+          git push
+          echo "✅ Resultados enviados para o repositório"
+        fi
+
+    - name: Limpar arquivos temporários
+      if: always()
+      run: |
+        # Remover arquivos temporários que possam ter sido criados
+        rm -f origem.xml origem.xml.gz
+        echo "🧹 Limpeza concluída"
+
+    - name: Mostrar resumo final
+      if: steps.check_last_run.outputs.skip_execution != 'true'
+      run: |
+        echo "
+        📋 RESUMO DA EXECUÇÃO
+        ==================
+        ✅ Status: Processamento concluído com sucesso
+        📅 Data/Hora: $(date)
+        ⏰ Offset aplicado: ${{ steps.offset.outputs.offset }} segundos
+        🔄 Trigger: ${{ github.event_name }}
+        📁 Arquivos gerados:
+        $(ls -lh compilacao.xml* 2>/dev/null || echo '   Nenhum arquivo encontrado')
+        
+        🎉 EPG pronto para uso!
+        "
+
+    - name: Upload de artefatos (opcional)
+      if: steps.check_last_run.outputs.skip_execution != 'true'
+      uses: actions/upload-artifact@v4
+      with:
+        name: epg-compilado-${{ github.run_number }}
+        path: |
+          compilacao.xml
+          compilacao.xml.gz
+          config.json
+          *_epg.xml
+        retention-days: 30
+
+  # Job adicional para validação (opcional)
+  validar-epg:
+    needs: processar-epg
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+
+    - name: Install dependencies
+      run: |
+        pip install lxml
+
+    - name: Validar XML gerado
+      run: |
+        if [ -f "compilacao.xml" ]; then
+          echo "🔍 Validando estrutura do XML..."
+          
+          python -c "
+from lxml import etree
+import sys
+
+try:
+    # Parse do XML
+    tree = etree.parse('compilacao.xml')
+    root = tree.getroot()
+    
+    # Contar elementos
+    channels = len(root.findall('channel'))
+    programmes = len(root.findall('programme'))
+    
+    print(f'✅ XML válido!')
+    print(f'📺 Canais: {channels}')
+    print(f'📋 Programas: {programmes}')
+    
+    if programmes == 0:
+        print('⚠️ Aviso: Nenhum programa encontrado!')
+        sys.exit(1)
+    
+    if channels == 0:
+        print('⚠️ Aviso: Nenhum canal encontrado!')
+        
+    print('🎉 Validação concluída com sucesso!')
+    
+except Exception as e:
+    print(f'❌ Erro na validação: {e}')
+    sys.exit(1)
+"
+        else
+          echo "❌ Arquivo compilacao.xml não encontrado!"
+          exit 1
+        fi
