@@ -1,8 +1,9 @@
 name: Processar EPG
 on:
-  # Trigger manual via workflow_dispatch
+  # Trigger manual via workflow_dispatch - MELHORADO para app Android
   workflow_dispatch:
     inputs:
+      # Configurações básicas
       offset_seconds:
         description: 'Offset em segundos (pode ser negativo)'
         required: false
@@ -10,6 +11,21 @@ on:
         type: string
       force_update:
         description: 'Forçar atualização mesmo se já processado hoje'
+        required: false
+        default: false
+        type: boolean
+      
+      # NOVOS INPUTS para app Android
+      m3u_url:
+        description: 'URL do ficheiro M3U do utilizador'
+        required: false
+        type: string
+      user_config:
+        description: 'JSON com configurações do utilizador (matches, timeshift, etc.)'
+        required: false
+        type: string
+      generate_user_config:
+        description: 'Gerar ficheiro de configuração personalizado'
         required: false
         default: false
         type: boolean
@@ -25,6 +41,7 @@ on:
       - '*.xml'
       - 'runworkflow'
       - 'config.json'
+      - 'user_configs/*.json'  # NOVO: configs de utilizadores
     branches:
       - main
 
@@ -48,7 +65,7 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install requests lxml python-dateutil
-
+        
     - name: Verificar se processar.py existe
       run: |
         if [ ! -f "processar.py" ]; then
@@ -56,13 +73,69 @@ jobs:
           exit 1
         fi
         echo "✅ processar.py encontrado"
-
+    
+    # NOVO: Download do M3U do utilizador se fornecido
+    - name: Download M3U do utilizador
+      if: github.event.inputs.m3u_url != ''
+      run: |
+        echo "📥 Fazendo download do M3U do utilizador..."
+        M3U_URL="${{ github.event.inputs.m3u_url }}"
+        
+        # Gerar nome do ficheiro baseado no timestamp
+        TIMESTAMP=$(date +%Y%m%d_%H%M%S)
+        M3U_FILENAME="user_${TIMESTAMP}.m3u"
+        
+        # Download do M3U
+        if curl -L -o "$M3U_FILENAME" "$M3U_URL"; then
+          echo "✅ M3U descarregado: $M3U_FILENAME"
+          echo "M3U_FILE=$M3U_FILENAME" >> $GITHUB_ENV
+        else
+          echo "❌ Erro ao descarregar M3U de: $M3U_URL"
+          exit 1
+        fi
+        
+    # NOVO: Processar configuração do utilizador
+    - name: Processar configuração do utilizador
+      if: github.event.inputs.user_config != ''
+      run: |
+        echo "⚙️ Processando configuração do utilizador..."
+        
+        # Criar diretório para configs de utilizador
+        mkdir -p user_configs
+        
+        # Salvar configuração do utilizador
+        echo '${{ github.event.inputs.user_config }}' > user_configs/temp_user_config.json
+        
+        # Validar JSON
+        if python -c "import json; json.load(open('user_configs/temp_user_config.json'))"; then
+          echo "✅ Configuração do utilizador válida"
+        else
+          echo "❌ Configuração do utilizador inválida"
+          exit 1
+        fi
+        
     - name: Determinar offset a usar
       id: offset
       run: |
-        # Prioridade: 1) Input manual, 2) Arquivo config.json, 3) Padrão
+        # Prioridade: 1) Input manual, 2) User config, 3) Arquivo config.json, 4) Padrão
         OFFSET="${{ github.event.inputs.offset_seconds }}"
         
+        # Tentar obter do user config se não fornecido
+        if [ -z "$OFFSET" ] || [ "$OFFSET" = "" ]; then
+          if [ -f "user_configs/temp_user_config.json" ]; then
+            OFFSET=$(python -c "
+import json
+try:
+    with open('user_configs/temp_user_config.json', 'r') as f:
+        config = json.load(f)
+    print(config.get('timeshift', {}).get('default_offset', 30))
+except:
+    print(30)
+" 2>/dev/null || echo "30")
+          fi
+        fi
+        
+        # Fallback para config.json
         if [ -z "$OFFSET" ] || [ "$OFFSET" = "" ]; then
           if [ -f "config.json" ]; then
             OFFSET=$(python -c "
@@ -146,7 +219,8 @@ except:
           exit 1
         fi
         echo "✅ Integridade do arquivo comprimido verificada"
-
+        
+    # MELHORADO: Processar match M3U com EPG (incluindo config do utilizador)
     - name: Processar match M3U com EPG
       if: steps.check_last_run.outputs.skip_execution != 'true'
       run: |
@@ -161,12 +235,25 @@ except:
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           mkdir -p backups
           
-          # Criar script Python para processar match M3U + EPG
-          cat > processar_match.py << 'EOF'
+          # Criar script Python MELHORADO para processar match M3U + EPG
+          cat > processar_match_enhanced.py << 'EOF'
 import re
 import sys
+import json
 from lxml import etree
 import os
+from datetime import datetime
+
+def carregar_config_utilizador():
+    """Carrega configuração do utilizador se existir"""
+    config_path = "user_configs/temp_user_config.json"
+    if os.path.exists(config_path):
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except:
+            pass
+    return {}
 
 def extrair_canais_m3u(arquivo_m3u):
     """Extrai canais do arquivo M3U"""
@@ -217,7 +304,30 @@ def extrair_canais_epg(arquivo_xml):
         print(f"❌ Erro ao processar EPG: {e}")
         return {}
 
-def criar_epg_personalizado(canais_m3u, canais_epg, arquivo_epg_original, arquivo_saida):
+def aplicar_configuracao_utilizador(canais_m3u, user_config):
+    """Aplica configurações personalizadas do utilizador"""
+    if not user_config:
+        return canais_m3u
+    
+    # Aplicar matches manuais
+    manual_matches = user_config.get('manual_matches', {})
+    timeshift_configs = user_config.get('timeshift', {})
+    
+    for canal in canais_m3u:
+        canal_nome = canal['nome']
+        
+        # Aplicar match manual se existir
+        if canal_nome in manual_matches:
+            canal['tvg_id'] = manual_matches[canal_nome]
+            canal['manual_match'] = True
+        
+        # Aplicar timeshift personalizado
+        if canal_nome in timeshift_configs:
+            canal['timeshift'] = timeshift_configs[canal_nome]
+    
+    return canais_m3u
+
+def criar_epg_personalizado(canais_m3u, canais_epg, arquivo_epg_original, arquivo_saida, user_config=None):
     """Cria EPG personalizado com apenas os canais da lista M3U"""
     try:
         # Parse do EPG original
@@ -227,6 +337,10 @@ def criar_epg_personalizado(canais_m3u, canais_epg, arquivo_epg_original, arquiv
         # IDs dos canais que queremos manter
         ids_desejados = set()
         matches_encontrados = 0
+        
+        # Aplicar configurações do utilizador
+        if user_config:
+            canais_m3u = aplicar_configuracao_utilizador(canais_m3u, user_config)
         
         for canal_m3u in canais_m3u:
             tvg_id = canal_m3u['tvg_id']
@@ -269,9 +383,56 @@ def criar_epg_personalizado(canais_m3u, canais_epg, arquivo_epg_original, arquiv
         print(f"❌ Erro ao criar EPG personalizado: {e}")
         return False
 
+def criar_ficheiro_configuracao_utilizador(canais_m3u, canais_epg, nome_ficheiro):
+    """Cria ficheiro de configuração final para o utilizador"""
+    try:
+        configuracao = {
+            'generated_at': datetime.now().isoformat(),
+            'total_channels': len(canais_m3u),
+            'matched_channels': 0,
+            'channels': [],
+            'settings': {
+                'timeshift': {},
+                'manual_matches': {}
+            }
+        }
+        
+        for canal in canais_m3u:
+            tvg_id = canal['tvg_id']
+            matched = tvg_id in canais_epg if tvg_id else False
+            
+            if matched:
+                configuracao['matched_channels'] += 1
+            
+            channel_config = {
+                'name': canal['nome'],
+                'tvg_id': tvg_id,
+                'tvg_name': canal['tvg_name'],
+                'matched': matched,
+                'epg_display_name': canais_epg.get(tvg_id, '') if matched else '',
+                'timeshift': canal.get('timeshift', 0),
+                'manual_match': canal.get('manual_match', False)
+            }
+            
+            configuracao['channels'].append(channel_config)
+        
+        # Salvar configuração
+        with open(nome_ficheiro, 'w', encoding='utf-8') as f:
+            json.dump(configuracao, f, indent=2, ensure_ascii=False)
+        
+        print(f"✅ Ficheiro de configuração criado: {nome_ficheiro}")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Erro ao criar ficheiro de configuração: {e}")
+        return False
+
 # Processar cada arquivo M3U
 if __name__ == "__main__":
     import glob
+    
+    # Carregar configuração do utilizador
+    user_config = carregar_config_utilizador()
     
     arquivos_m3u = glob.glob("*.m3u")
     epg_original = "compilacao.xml"
@@ -295,18 +456,23 @@ if __name__ == "__main__":
         # Nome do arquivo de saída baseado no M3U
         nome_base = os.path.splitext(arquivo_m3u)[0]
         arquivo_saida = f"{nome_base}_epg.xml"
+        ficheiro_config = f"{nome_base}_config.json"
         
         # Criar EPG personalizado
-        if criar_epg_personalizado(canais_m3u, canais_epg, epg_original, arquivo_saida):
+        if criar_epg_personalizado(canais_m3u, canais_epg, epg_original, arquivo_saida, user_config):
             print(f"✅ Criado: {arquivo_saida}")
         else:
             print(f"❌ Falha ao criar EPG para {arquivo_m3u}")
+        
+        # Criar ficheiro de configuração do utilizador
+        if criar_ficheiro_configuracao_utilizador(canais_m3u, canais_epg, ficheiro_config):
+            print(f"✅ Configuração criada: {ficheiro_config}")
 EOF
 
           # Executar processamento do match
           if [ -f "compilacao.xml" ]; then
             echo "🔄 Executando match M3U + EPG..."
-            python processar_match.py
+            python processar_match_enhanced.py
             
             # Criar backups após processamento
             for m3u_file in $M3U_FILES; do
@@ -321,7 +487,7 @@ EOF
           fi
           
           # Limpar script temporário
-          rm -f processar_match.py
+          rm -f processar_match_enhanced.py
         else
           echo "ℹ️ Nenhum arquivo M3U encontrado na raiz"
         fi
@@ -333,7 +499,7 @@ EOF
           echo "🗑️ Removendo arquivo trigger 'runworkflow'"
           rm runworkflow
         fi
-
+        
     - name: Commit e push dos resultados
       if: steps.check_last_run.outputs.skip_execution != 'true'
       run: |
@@ -341,9 +507,11 @@ EOF
         git config --local user.email "action@github.com"
         git config --local user.name "GitHub Action"
         
-        # Adicionar arquivos gerados (incluindo EPGs personalizados)
+        # Adicionar arquivos gerados (incluindo EPGs e configs personalizados)
         git add compilacao.xml compilacao.xml.gz config.json
         git add *_epg.xml 2>/dev/null || true
+        git add *_config.json 2>/dev/null || true  # NOVO: configs de utilizador
+        git add user_configs/ 2>/dev/null || true  # NOVO: diretório de configs
         
         # Adicionar backups se existirem
         if [ -d "backups" ]; then
@@ -363,11 +531,16 @@ EOF
           TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S UTC')
           OFFSET="${{ steps.offset.outputs.offset }}"
           
+          USER_INFO=""
+          if [ -n "${{ github.event.inputs.m3u_url }}" ]; then
+            USER_INFO="📱 Processado via App Android"
+          fi
+          
           COMMIT_MSG="🤖 EPG processado automaticamente
-
 📅 Data: $TIMESTAMP
 ⏰ Offset: ${OFFSET}s
 🔄 Trigger: ${{ github.event_name }}
+$USER_INFO
 📊 Status: ✅ Sucesso"
 
           git commit -m "$COMMIT_MSG"
@@ -380,8 +553,9 @@ EOF
       run: |
         # Remover arquivos temporários que possam ter sido criados
         rm -f origem.xml origem.xml.gz
+        rm -f processar_match_enhanced.py
         echo "🧹 Limpeza concluída"
-
+        
     - name: Mostrar resumo final
       if: steps.check_last_run.outputs.skip_execution != 'true'
       run: |
@@ -393,11 +567,11 @@ EOF
         ⏰ Offset aplicado: ${{ steps.offset.outputs.offset }} segundos
         🔄 Trigger: ${{ github.event_name }}
         📁 Arquivos gerados:
-        $(ls -lh compilacao.xml* 2>/dev/null || echo '   Nenhum arquivo encontrado')
+        $(ls -lh compilacao.xml* *_epg.xml *_config.json 2>/dev/null || echo '   Nenhum arquivo encontrado')
         
         🎉 EPG pronto para uso!
         "
-
+        
     - name: Upload de artefatos (opcional)
       if: steps.check_last_run.outputs.skip_execution != 'true'
       uses: actions/upload-artifact@v4
@@ -408,6 +582,7 @@ EOF
           compilacao.xml.gz
           config.json
           *_epg.xml
+          *_config.json
         retention-days: 30
 
   # Job adicional para validação (opcional)
@@ -428,7 +603,7 @@ EOF
     - name: Install dependencies
       run: |
         pip install lxml
-
+        
     - name: Validar XML gerado
       run: |
         if [ -f "compilacao.xml" ]; then
