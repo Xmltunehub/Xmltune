@@ -1,66 +1,28 @@
 {
+  "offset_seconds": 30,
+  "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+  "last_update": "2025-07-04T12:00:00.000000",
   "app_version": "1.1.0",
-  "last_update": "2025-07-03T10:00:00.000000",
+  
+  "cache_enabled": true,
+  "cache_duration_hours": 24,
+  "validation_enabled": true,
+  "channel_offsets": {},
+  "user_profiles": {},
+  "output_format": "xml",
+  "compression_enabled": true,
+  "backup_enabled": true,
+  "max_retries": 3,
+  "timeout_seconds": 30,
+  "timezone": "Europe/Lisbon",
   
   "epg_source": {
     "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-    "backup_urls": [
-      "https://epgshare01.online/epgshare01/epg_ripper_PT2.xml.gz",
-      "https://epgshare01.online/epgshare01/epg_ripper_PT3.xml.gz"
-    ],
+    "backup_urls": [],
     "update_interval_hours": 6,
     "timeout_seconds": 30,
     "max_retries": 3,
     "user_agent": "EPG-Processor/1.1.0"
-  },
-  
-  "timeshift": {
-    "offset_seconds": 30,
-    "channel_offsets": {
-      "exemplo.tv": 45,
-      "canal.sport": 60,
-      "movie.channel": 15
-    },
-    "timezone": "Europe/Lisbon",
-    "dst_auto_adjust": true
-  },
-  
-  "processing": {
-    "cache_enabled": true,
-    "cache_duration_hours": 24,
-    "validation_enabled": true,
-    "backup_enabled": true,
-    "compression_enabled": true,
-    "output_format": "xml",
-    "pretty_print": true,
-    "remove_duplicates": true,
-    "sort_programmes": true
-  },
-  
-  "filters": {
-    "enabled": false,
-    "include_channels": [],
-    "exclude_channels": [],
-    "min_programme_duration_minutes": 5,
-    "max_programme_duration_hours": 24,
-    "include_categories": [],
-    "exclude_categories": [
-      "adult",
-      "gambling"
-    ],
-    "language_filter": []
-  },
-  
-  "output": {
-    "filename": "epg_timeshift.xml",
-    "compress_output": true,
-    "split_by_day": false,
-    "max_days_ahead": 7,
-    "include_past_programmes": false,
-    "custom_headers": {
-      "generator-info-name": "EPG-Processor-PT",
-      "generator-info-url": "https://github.com/user/epg-processor"
-    }
   },
   
   "android_integration": {
@@ -70,66 +32,7 @@
     "api_host": "0.0.0.0",
     "api_key": "",
     "webhook_url": "",
-    "sync_enabled": false,
-    "m3u_matching": {
-      "enabled": false,
-      "fuzzy_matching": true,
-      "similarity_threshold": 0.8,
-      "auto_map_channels": true
-    }
-  },
-  
-  "user_profiles": {
-    "default": {
-      "name": "Perfil Padrão",
-      "offset_seconds": 30,
-      "preferred_language": "pt",
-      "timezone": "Europe/Lisbon",
-      "filters": {
-        "adult_content": false,
-        "preferred_categories": [
-          "movie",
-          "series",
-          "news",
-          "sport"
-        ]
-      }
-    },
-    "family": {
-      "name": "Perfil Família",
-      "offset_seconds": 30,
-      "preferred_language": "pt",
-      "timezone": "Europe/Lisbon",
-      "filters": {
-        "adult_content": false,
-        "exclude_categories": [
-          "adult",
-          "gambling",
-          "horror"
-        ],
-        "max_rating": "PG-13"
-      }
-    },
-    "sports": {
-      "name": "Perfil Desporto",
-      "offset_seconds": 45,
-      "preferred_language": "pt",
-      "timezone": "Europe/Lisbon",
-      "filters": {
-        "adult_content": false,
-        "preferred_categories": [
-          "sport",
-          "football",
-          "basketball",
-          "motorsport"
-        ]
-      },
-      "channel_priorities": [
-        "sport.tv",
-        "benfica.tv",
-        "porto.canal"
-      ]
-    }
+    "sync_enabled": false
   },
   
   "monitoring": {
@@ -137,168 +40,12 @@
     "log_level": "INFO",
     "max_log_size_mb": 10,
     "max_log_files": 5,
-    "metrics_enabled": true,
-    "performance_monitoring": true,
-    "error_reporting": true,
-    "statistics": {
-      "save_to_file": true,
-      "include_processing_time": true,
-      "include_channel_stats": true,
-      "include_programme_stats": true
-    }
-  },
-  
-  "advanced": {
-    "parallel_processing": false,
-    "max_workers": 4,
-    "memory_limit_mb": 512,
-    "xml_parser": "lxml",
-    "encoding": "utf-8",
-    "recovery_mode": true,
-    "strict_validation": false,
-    "custom_xpath_filters": [],
-    "xml_namespaces": {
-      "tv": "http://www.xmltv.org/dtd/xmltv.dtd"
-    }
-  },
-  
-  "experimental": {
-    "enabled": false,
-    "machine_learning": {
-      "auto_categorization": false,
-      "language_detection": false,
-      "content_rating_prediction": false
-    },
-    "smart_timeshift": {
-      "enabled": false,
-      "learn_from_viewing_patterns": false,
-      "auto_adjust_offsets": false
-    },
-    "cloud_sync": {
-      "enabled": false,
-      "provider": "",
-      "sync_interval_hours": 24
-    }
-  },
-  
-  "channel_mapping": {
-    "auto_mapping": true,
-    "manual_mappings": {
-      "rtp1.pt": {
-        "display_name": "RTP1",
-        "icon": "https://example.com/logos/rtp1.png",
-        "group": "Generalistas",
-        "country": "PT",
-        "language": "pt"
-      },
-      "sic.pt": {
-        "display_name": "SIC",
-        "icon": "https://example.com/logos/sic.png",
-        "group": "Generalistas",
-        "country": "PT",
-        "language": "pt"
-      },
-      "tvi.pt": {
-        "display_name": "TVI",
-        "icon": "https://example.com/logos/tvi.png",
-        "group": "Generalistas",
-        "country": "PT",
-        "language": "pt"
-      }
-    },
-    "group_mappings": {
-      "Generalistas": [
-        "rtp1.pt",
-        "rtp2.pt",
-        "sic.pt",
-        "tvi.pt"
-      ],
-      "Desporto": [
-        "sporttv1.pt",
-        "sporttv2.pt",
-        "sporttv3.pt"
-      ],
-      "Filmes": [
-        "hollywood.pt",
-        "cinemundo.pt",
-        "fox.pt"
-      ],
-      "Infantil": [
-        "disney.pt",
-        "cartoon.pt",
-        "nickelodeon.pt"
-      ]
-    }
-  },
-  
-  "notification": {
-    "enabled": false,
-    "methods": {
-      "email": {
-        "enabled": false,
-        "smtp_server": "",
-        "smtp_port": 587,
-        "username": "",
-        "password": "",
-        "from_address": "",
-        "to_addresses": []
-      },
-      "webhook": {
-        "enabled": false,
-        "url": "",
-        "method": "POST",
-        "headers": {},
-        "on_success": true,
-        "on_error": true
-      },
-      "discord": {
-        "enabled": false,
-        "webhook_url": "",
-        "mention_on_error": false
-      }
-    }
-  },
-  
-  "backup": {
-    "enabled": true,
-    "max_backups": 7,
-    "compress_backups": true,
-    "backup_location": "backups/",
-    "auto_cleanup": true,
-    "cloud_backup": {
-      "enabled": false,
-      "provider": "",
-      "bucket": "",
-      "path": "epg-backups/"
-    }
-  },
-  
-  "security": {
-    "api_authentication": true,
-    "rate_limiting": {
-      "enabled": true,
-      "requests_per_minute": 60,
-      "burst_size": 10
-    },
-    "cors": {
-      "enabled": true,
-      "allowed_origins": [
-        "http://localhost:3000",
-        "https://your-app.com"
-      ]
-    },
-    "encryption": {
-      "encrypt_sensitive_data": false,
-      "encryption_key": ""
-    }
+    "metrics_enabled": true
   },
   
   "debug": {
     "enabled": false,
     "verbose_logging": false,
-    "save_intermediate_files": false,
-    "performance_profiling": false,
-    "memory_monitoring": false,
-    "xml_validation_details": false
+    "save_intermediate_files": false
   }
 }
