@@ -1,51 +1,60 @@
 {
-  "offset_seconds": 30,
-  "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-  "last_update": "2025-07-04T12:00:00.000000",
   "app_version": "1.1.0",
+  "last_update": "2025-07-01T05:01:06.584689",
   
-  "cache_enabled": true,
-  "cache_duration_hours": 24,
-  "validation_enabled": true,
-  "channel_offsets": {},
-  "user_profiles": {},
-  "output_format": "xml",
-  "compression_enabled": true,
-  "backup_enabled": true,
-  "max_retries": 3,
-  "timeout_seconds": 30,
-  "timezone": "Europe/Lisbon",
+  "timeshift": {
+    "default_offset_seconds": 30,
+    "per_channel": {},
+    "force_offset": null,
+    "force_offset_expiry": null
+  },
   
-  "epg_source": {
-    "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+  "source": {
+    "url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
     "backup_urls": [],
-    "update_interval_hours": 6,
-    "timeout_seconds": 30,
-    "max_retries": 3,
-    "user_agent": "EPG-Processor/1.1.0"
+    "timeout": 300,
+    "retry_attempts": 3
+  },
+  
+  "processing": {
+    "enable_cache": true,
+    "cache_duration_hours": 24,
+    "validate_xml": true,
+    "generate_metrics": true,
+    "compress_output": false
+  },
+  
+  "output": {
+    "filename": "epg_processed.xml",
+    "keep_backups": 3,
+    "include_metadata": true
+  },
+  
+  "scheduling": {
+    "auto_run": true,
+    "run_time": "06:00",
+    "timezone": "Europe/Lisbon"
   },
   
   "android_integration": {
-    "enabled": true,
     "api_enabled": false,
     "api_port": 8080,
-    "api_host": "0.0.0.0",
-    "api_key": "",
-    "webhook_url": "",
-    "sync_enabled": false
+    "api_key": null,
+    "allow_remote_config": true,
+    "sync_interval_minutes": 60
   },
   
-  "monitoring": {
-    "enabled": true,
-    "log_level": "INFO",
-    "max_log_size_mb": 10,
-    "max_log_files": 5,
-    "metrics_enabled": true
+  "logging": {
+    "level": "INFO",
+    "keep_logs_days": 30,
+    "detailed_metrics": true
   },
   
-  "debug": {
-    "enabled": false,
-    "verbose_logging": false,
-    "save_intermediate_files": false
+  "profiles": {
+    "default": {
+      "name": "Configuração Padrão",
+      "active": true,
+      "description": "Perfil padrão para processamento automático"
+    }
   }
 }
