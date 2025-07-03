@@ -1,474 +1,483 @@
-import requests
-import gzip
-import os
-import shutil
-import argparse
-import json
-from lxml import etree
-from datetime import datetime, timedelta
-from pathlib import Path
-import logging
-import sys
-import time
+#!/usr/bin/env python3
+"""
+EPG Processor - Versão Otimizada
+Sistema de processamento automático de EPG com timeshift dinâmico
+"""
 
-# Configurar logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+import os
+import sys
+import json
+import gzip
+import hashlib
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple
+from pathlib import Path
+
+import requests
+from lxml import etree
+from dateutil import parser, tz
+
+# Configuração de logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('epg_processor.log'),
+        logging.StreamHandler()
+    ]
+)
 logger = logging.getLogger(__name__)
 
-# Configuração padrão
-DEFAULT_OFFSET_SECONDS = 30
-CONFIG_FILE = "config.json"
-
-def carregar_configuracao():
-    """Carrega configuração do ficheiro ou cria padrão"""
-    config_default = {
-        "offset_seconds": DEFAULT_OFFSET_SECONDS,
-        "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-        "last_update": None,
-        "app_version": "1.0.0"
-    }
+class EPGProcessor:
+    """Processador EPG com funcionalidades avançadas"""
     
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                config = json.load(f)
-                # Garantir que todos os campos existem
-                for key, value in config_default.items():
-                    if key not in config:
-                        config[key] = value
-                return config
-        except Exception as e:
-            logger.warning(f"Erro ao carregar config: {e}. Usando padrão.")
-    
-    return config_default
-
-def guardar_configuracao(config):
-    """Guarda configuração no ficheiro"""
-    try:
-        config["last_update"] = datetime.now().isoformat()
-        with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
-            json.dump(config, f, indent=2, ensure_ascii=False)
-        logger.info(f"Configuração guardada: offset={config['offset_seconds']}s")
-    except Exception as e:
-        logger.error(f"Erro ao guardar configuração: {e}")
-
-def limpar_ficheiros_temporarios():
-    """Remove ficheiros temporários"""
-    ficheiros_temp = ["origem.xml.gz", "origem.xml"]
-    for ficheiro in ficheiros_temp:
-        if os.path.exists(ficheiro):
-            try:
-                os.remove(ficheiro)
-                logger.info(f"Ficheiro temporário {ficheiro} removido")
-            except Exception as e:
-                logger.warning(f"Não foi possível remover {ficheiro}: {e}")
-
-def fazer_download(url):
-    """Faz download do ficheiro EPG original"""
-    try:
-        logger.info(f"🔄 Iniciando download do EPG de: {url}")
-        
-        # Request com timeout melhorado e headers melhorados
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Linux; Android 10; SM-G973F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-            'Accept-Language': 'pt-PT,pt;q=0.9,en;q=0.8',
-            'Accept-Encoding': 'gzip, deflate',
-            'Connection': 'keep-alive'
+    def __init__(self, config_path: str = "config.json"):
+        self.config_path = config_path
+        self.config = self._load_config()
+        self.stats = {
+            'channels_processed': 0,
+            'programmes_processed': 0,
+            'programmes_modified': 0,
+            'cache_hits': 0,
+            'cache_misses': 0,
+            'processing_time': 0,
+            'errors': []
         }
         
-        # Tentar o download com retry
-        max_tentativas = 3
-        for tentativa in range(max_tentativas):
-            try:
-                logger.info(f"Tentativa {tentativa + 1}/{max_tentativas}")
+    def _load_config(self) -> Dict:
+        """Carrega configuração do arquivo JSON"""
+        try:
+            with open(self.config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
                 
-                # Timeout aumentado para ficheiros grandes
-                response = requests.get(url, headers=headers, timeout=300, stream=True)
+            # Configurações padrão
+            default_config = {
+                "offset_seconds": 30,
+                "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+                "last_update": None,
+                "app_version": "1.0.0",
+                "cache_enabled": True,
+                "cache_duration_hours": 24,
+                "validation_enabled": True,
+                "channel_offsets": {},
+                "user_profiles": {},
+                "output_format": "xml",
+                "compression_enabled": True,
+                "backup_enabled": True,
+                "max_retries": 3,
+                "timeout_seconds": 30,
+                "timezone": "Europe/Lisbon"
+            }
+            
+            # Merge configurações
+            for key, value in default_config.items():
+                if key not in config:
+                    config[key] = value
+                    
+            return config
+            
+        except FileNotFoundError:
+            logger.warning(f"Arquivo de configuração {self.config_path} não encontrado. Usando configuração padrão.")
+            return self._create_default_config()
+        except json.JSONDecodeError as e:
+            logger.error(f"Erro ao carregar configuração: {e}")
+            return self._create_default_config()
+    
+    def _create_default_config(self) -> Dict:
+        """Cria configuração padrão"""
+        config = {
+            "offset_seconds": 30,
+            "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+            "last_update": None,
+            "app_version": "1.0.0",
+            "cache_enabled": True,
+            "cache_duration_hours": 24,
+            "validation_enabled": True,
+            "channel_offsets": {},
+            "user_profiles": {},
+            "output_format": "xml",
+            "compression_enabled": True,
+            "backup_enabled": True,
+            "max_retries": 3,
+            "timeout_seconds": 30,
+            "timezone": "Europe/Lisbon"
+        }
+        
+        # Salva configuração padrão
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(config, f, indent=2, ensure_ascii=False)
+            logger.info(f"Configuração padrão criada em {self.config_path}")
+        except Exception as e:
+            logger.error(f"Erro ao criar configuração padrão: {e}")
+            
+        return config
+    
+    def _save_config(self):
+        """Salva configuração atual"""
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Erro ao salvar configuração: {e}")
+    
+    def _get_file_hash(self, file_path: str) -> str:
+        """Calcula hash SHA256 do arquivo"""
+        try:
+            with open(file_path, 'rb') as f:
+                return hashlib.sha256(f.read()).hexdigest()
+        except Exception as e:
+            logger.error(f"Erro ao calcular hash: {e}")
+            return ""
+    
+    def _is_cache_valid(self, file_path: str) -> bool:
+        """Verifica se o cache ainda é válido"""
+        if not self.config.get('cache_enabled', True):
+            return False
+            
+        cache_file = f"{file_path}.cache"
+        if not os.path.exists(cache_file):
+            return False
+            
+        try:
+            cache_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
+            max_age = timedelta(hours=self.config.get('cache_duration_hours', 24))
+            return cache_age < max_age
+        except Exception:
+            return False
+    
+    def _download_epg(self, url: str) -> Optional[str]:
+        """Download do arquivo EPG com retry e cache"""
+        temp_file = "temp_epg.xml.gz"
+        
+        # Verifica cache
+        if self._is_cache_valid(temp_file):
+            logger.info("Usando EPG em cache")
+            self.stats['cache_hits'] += 1
+            return temp_file
+            
+        self.stats['cache_misses'] += 1
+        
+        for attempt in range(self.config.get('max_retries', 3)):
+            try:
+                logger.info(f"Tentativa {attempt + 1} de download do EPG...")
+                
+                response = requests.get(
+                    url,
+                    timeout=self.config.get('timeout_seconds', 30),
+                    stream=True
+                )
                 response.raise_for_status()
                 
-                # Guardar ficheiro com progresso
-                total_size = int(response.headers.get('content-length', 0))
-                downloaded = 0
-                
-                with open("origem.xml.gz", "wb") as f:
+                with open(temp_file, 'wb') as f:
                     for chunk in response.iter_content(chunk_size=8192):
-                        if chunk:
-                            f.write(chunk)
-                            downloaded += len(chunk)
-                            
-                            # Log de progresso a cada 1MB
-                            if downloaded % (1024 * 1024) == 0:
-                                if total_size > 0:
-                                    progress = (downloaded / total_size) * 100
-                                    logger.info(f"📥 Progresso: {downloaded:,} / {total_size:,} bytes ({progress:.1f}%)")
-                                else:
-                                    logger.info(f"📥 Descarregados: {downloaded:,} bytes")
+                        f.write(chunk)
                 
-                # Verificar tamanho
-                tamanho = os.path.getsize("origem.xml.gz")
-                logger.info(f"✅ Download concluído. Tamanho: {tamanho:,} bytes")
+                # Cria arquivo de cache
+                if self.config.get('cache_enabled', True):
+                    cache_file = f"{temp_file}.cache"
+                    Path(cache_file).touch()
                 
-                if tamanho < 1000:
-                    raise Exception("Ficheiro muito pequeno - possivelmente corrompido")
+                logger.info(f"EPG baixado com sucesso ({os.path.getsize(temp_file)} bytes)")
+                return temp_file
                 
-                # Verificar se é um ficheiro gzip válido
-                try:
-                    with gzip.open("origem.xml.gz", "rb") as test_file:
-                        test_content = test_file.read(100)
-                        if len(test_content) < 50:
-                            raise Exception("Conteúdo gzip insuficiente")
-                    logger.info("✅ Ficheiro gzip válido")
-                except Exception as e:
-                    raise Exception(f"Ficheiro gzip inválido: {e}")
-                
-                return True
-                
-            except requests.exceptions.RequestException as e:
-                logger.warning(f"Tentativa {tentativa + 1} falhou: {e}")
-                if tentativa == max_tentativas - 1:
-                    raise
-                logger.info("Aguardando 10 segundos antes da próxima tentativa...")
-                time.sleep(10)
-        
-        return False
-        
-    except Exception as e:
-        logger.error(f"❌ Erro no download: {e}")
-        return False
-
-def descomprimir_xml():
-    """Descomprime o ficheiro XML"""
-    try:
-        logger.info("🔄 A descomprimir XML...")
-        
-        # Verificar tamanho do ficheiro comprimido
-        tamanho_gz = os.path.getsize("origem.xml.gz")
-        logger.info(f"Tamanho do ficheiro .gz: {tamanho_gz:,} bytes")
-        
-        with gzip.open("origem.xml.gz", "rb") as f_in:
-            with open("origem.xml", "wb") as f_out:
-                # Descomprimir com progresso
-                total_read = 0
-                while True:
-                    chunk = f_in.read(64 * 1024)  # 64KB chunks
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    total_read += len(chunk)
+            except requests.RequestException as e:
+                logger.error(f"Erro no download (tentativa {attempt + 1}): {e}")
+                if attempt == self.config.get('max_retries', 3) - 1:
+                    self.stats['errors'].append(f"Falha no download após {self.config.get('max_retries', 3)} tentativas")
+                    return None
                     
-                    # Log de progresso a cada 5MB
-                    if total_read % (5 * 1024 * 1024) == 0:
-                        logger.info(f"📤 Descomprimidos: {total_read:,} bytes")
-        
-        if not os.path.exists("origem.xml"):
-            raise Exception("Ficheiro XML não foi criado")
-            
-        tamanho = os.path.getsize("origem.xml")
-        ratio = (tamanho / tamanho_gz) if tamanho_gz > 0 else 0
-        logger.info(f"✅ Descompressão concluída. Tamanho XML: {tamanho:,} bytes (ratio: {ratio:.1f}x)")
-        
-        if tamanho < 1000:
-            raise Exception("Ficheiro XML descomprimido muito pequeno")
-            
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Erro na descompressão: {e}")
-        return False
-
-def processar_xml(offset_seconds):
-    """Processa o XML aplicando offset em segundos"""
-    try:
-        offset_info = f"+{offset_seconds}" if offset_seconds > 0 else str(offset_seconds)
-        logger.info(f"🔄 A processar XML (aplicando {offset_info} segundos)...")
-        
-        # Parse do XML
-        parser = etree.XMLParser(recover=True, encoding='utf-8')
-        
+        return None
+    
+    def _decompress_file(self, compressed_file: str, output_file: str) -> bool:
+        """Descomprime arquivo gz"""
         try:
-            with open("origem.xml", "rb") as f:
-                tree = etree.parse(f, parser)
+            with gzip.open(compressed_file, 'rb') as f_in:
+                with open(output_file, 'wb') as f_out:
+                    f_out.write(f_in.read())
+            return True
         except Exception as e:
-            logger.warning(f"Erro com parser UTF-8, tentando parser genérico: {e}")
-            parser = etree.XMLParser(recover=True)
-            with open("origem.xml", "rb") as f:
-                tree = etree.parse(f, parser)
+            logger.error(f"Erro na descompressão: {e}")
+            self.stats['errors'].append(f"Erro na descompressão: {e}")
+            return False
+    
+    def _validate_xml(self, xml_file: str) -> bool:
+        """Valida estrutura XML do EPG"""
+        if not self.config.get('validation_enabled', True):
+            return True
+            
+        try:
+            parser_xml = etree.XMLParser(recover=True)
+            tree = etree.parse(xml_file, parser_xml)
+            root = tree.getroot()
+            
+            # Validações básicas
+            if root.tag != 'tv':
+                logger.error("XML inválido: elemento raiz deve ser 'tv'")
+                return False
+                
+            channels = root.findall('channel')
+            programmes = root.findall('programme')
+            
+            if len(channels) == 0:
+                logger.error("XML inválido: nenhum canal encontrado")
+                return False
+                
+            if len(programmes) == 0:
+                logger.error("XML inválido: nenhum programa encontrado")
+                return False
+                
+            logger.info(f"XML válido: {len(channels)} canais, {len(programmes)} programas")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Erro na validação XML: {e}")
+            self.stats['errors'].append(f"Erro na validação XML: {e}")
+            return False
+    
+    def _get_channel_offset(self, channel_id: str) -> int:
+        """Obtém offset específico do canal"""
+        channel_offsets = self.config.get('channel_offsets', {})
+        return channel_offsets.get(channel_id, self.config.get('offset_seconds', 30))
+    
+    def _apply_timeshift(self, time_str: str, offset_seconds: int) -> str:
+        """Aplica timeshift ao timestamp"""
+        try:
+            # Parse do timestamp
+            dt = parser.parse(time_str)
+            
+            # Garante timezone
+            if dt.tzinfo is None:
+                timezone = tz.gettz(self.config.get('timezone', 'Europe/Lisbon'))
+                dt = dt.replace(tzinfo=timezone)
+            
+            # Aplica offset
+            dt_shifted = dt + timedelta(seconds=offset_seconds)
+            
+            # Retorna no formato original
+            return dt_shifted.strftime('%Y%m%d%H%M%S %z')
+            
+        except Exception as e:
+            logger.error(f"Erro ao aplicar timeshift: {e}")
+            return time_str
+    
+    def _process_programmes(self, root) -> int:
+        """Processa programas com timeshift dinâmico"""
+        programmes = root.findall('programme')
+        modified_count = 0
         
-        root = tree.getroot()
-        logger.info(f"XML carregado - Root tag: {root.tag}")
-        
-        # Contar programas e canais
-        programas = root.findall("programme")
-        canais = root.findall("channel")
-        logger.info(f"Encontrados {len(canais)} canais e {len(programas)} programas")
-        
-        if len(programas) == 0:
-            raise Exception("Nenhum programa encontrado no XML")
-        
-        # Contar programas processados
-        programas_processados = 0
-        programas_com_erro = 0
-        
-        # Processar cada programa com progresso
-        total_programas = len(programas)
-        for i, prog in enumerate(programas):
+        for programme in programmes:
             try:
-                # Processar horário de início
-                if "start" in prog.attrib:
-                    start_original = prog.attrib["start"]
-                    start_ajustado = ajustar_tempo(start_original, offset_seconds)
-                    prog.attrib["start"] = start_ajustado
-                    
-                    # Debug para primeiros 3 programas
-                    if programas_processados < 3:
-                        logger.info(f"Programa {programas_processados + 1}: {start_original} → {start_ajustado}")
+                channel_id = programme.get('channel', '')
+                offset = self._get_channel_offset(channel_id)
                 
-                # Processar horário de fim
-                if "stop" in prog.attrib:
-                    stop_original = prog.attrib["stop"]
-                    stop_ajustado = ajustar_tempo(stop_original, offset_seconds)
-                    prog.attrib["stop"] = stop_ajustado
+                # Aplica timeshift em start e stop
+                start_time = programme.get('start')
+                stop_time = programme.get('stop')
                 
-                programas_processados += 1
+                if start_time:
+                    new_start = self._apply_timeshift(start_time, offset)
+                    if new_start != start_time:
+                        programme.set('start', new_start)
+                        modified_count += 1
                 
-                # Log de progresso a cada 10% dos programas
-                if programas_processados % max(1, total_programas // 10) == 0:
-                    progress = (programas_processados / total_programas) * 100
-                    logger.info(f"🔄 Progresso processamento: {progress:.0f}% ({programas_processados}/{total_programas})")
+                if stop_time:
+                    new_stop = self._apply_timeshift(stop_time, offset)
+                    if new_stop != stop_time:
+                        programme.set('stop', new_stop)
+                        modified_count += 1
                 
             except Exception as e:
-                programas_com_erro += 1
-                logger.warning(f"Erro ao processar programa {prog.get('start', 'unknown')}: {e}")
+                logger.error(f"Erro ao processar programa: {e}")
+                self.stats['errors'].append(f"Erro ao processar programa: {e}")
         
-        logger.info(f"✅ Processamento concluído:")
-        logger.info(f"   - Offset aplicado: {offset_info} segundos")
-        logger.info(f"   - Programas processados: {programas_processados}")
-        logger.info(f"   - Programas com erro: {programas_com_erro}")
-        logger.info(f"   - Taxa de sucesso: {(programas_processados/total_programas)*100:.1f}%")
-        
-        if programas_processados == 0:
-            raise Exception("Nenhum programa foi processado com sucesso")
-        
-        # Guardar XML processado
-        logger.info("💾 A guardar XML processado...")
-        try:
-            with open("compilacao.xml", "wb") as f:
-                tree.write(f, encoding="utf-8", xml_declaration=True, pretty_print=True)
+        return modified_count
+    
+    def _backup_file(self, file_path: str):
+        """Cria backup do arquivo"""
+        if not self.config.get('backup_enabled', True):
+            return
             
-            tamanho_compilacao = os.path.getsize("compilacao.xml")
-            logger.info(f"✅ Ficheiro compilacao.xml criado: {tamanho_compilacao:,} bytes")
+        try:
+            backup_path = f"{file_path}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+            if os.path.exists(file_path):
+                os.rename(file_path, backup_path)
+                logger.info(f"Backup criado: {backup_path}")
+        except Exception as e:
+            logger.error(f"Erro ao criar backup: {e}")
+    
+    def _compress_output(self, xml_file: str) -> Optional[str]:
+        """Comprime arquivo de saída"""
+        if not self.config.get('compression_enabled', True):
+            return xml_file
+            
+        try:
+            compressed_file = f"{xml_file}.gz"
+            with open(xml_file, 'rb') as f_in:
+                with gzip.open(compressed_file, 'wb') as f_out:
+                    f_out.write(f_in.read())
+            
+            # Remove arquivo original
+            os.remove(xml_file)
+            logger.info(f"Arquivo comprimido: {compressed_file}")
+            return compressed_file
             
         except Exception as e:
-            logger.error(f"Erro ao guardar XML com formatação: {e}")
-            with open("compilacao.xml", "wb") as f:
-                tree.write(f, encoding="utf-8", xml_declaration=True)
-            logger.info("✅ XML guardado sem formatação")
+            logger.error(f"Erro na compressão: {e}")
+            return xml_file
+    
+    def process_epg(self) -> bool:
+        """Processa EPG completo"""
+        start_time = datetime.now()
+        logger.info("Iniciando processamento EPG...")
         
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Erro no processamento XML: {e}")
-        return False
-
-def ajustar_tempo(valor_tempo, offset_seconds):
-    """Ajusta o tempo adicionando/subtraindo segundos"""
-    try:
-        valor_tempo = valor_tempo.strip()
-        
-        if len(valor_tempo) >= 14:
-            # Separar data/hora do timezone
-            parte_data = valor_tempo[:14]
-            parte_timezone = valor_tempo[14:].strip()
-            
-            if not parte_data.isdigit():
-                logger.warning(f"Parte da data não é numérica: {parte_data}")
-                return valor_tempo
-            
-            # Converter para datetime
-            dt = datetime.strptime(parte_data, "%Y%m%d%H%M%S")
-            
-            # Aplicar offset (pode ser positivo ou negativo)
-            dt += timedelta(seconds=offset_seconds)
-            
-            # Reconstruir string
-            nova_data = dt.strftime("%Y%m%d%H%M%S")
-            
-            # Manter timezone original se existir
-            if parte_timezone:
-                return f"{nova_data} {parte_timezone}"
-            else:
-                return nova_data
-        else:
-            logger.warning(f"Formato de tempo inválido (muito curto): {valor_tempo}")
-            return valor_tempo
-            
-    except ValueError as e:
-        logger.warning(f"Erro ao converter tempo '{valor_tempo}': {e}")
-        return valor_tempo
-    except Exception as e:
-        logger.warning(f"Erro inesperado ao ajustar tempo '{valor_tempo}': {e}")
-        return valor_tempo
-
-def comprimir_xml():
-    """Comprime o XML final"""
-    try:
-        logger.info("🔄 A comprimir ficheiro final...")
-        
-        if not os.path.exists("compilacao.xml"):
-            raise Exception("Ficheiro compilacao.xml não encontrado")
-        
-        tamanho_original = os.path.getsize("compilacao.xml")
-        logger.info(f"Tamanho original: {tamanho_original:,} bytes")
-        
-        # Comprimir com progresso
-        with open("compilacao.xml", "rb") as f_in:
-            with gzip.open("compilacao.xml.gz", "wb", compresslevel=9) as f_out:
-                total_read = 0
-                while True:
-                    chunk = f_in.read(64 * 1024)  # 64KB chunks
-                    if not chunk:
-                        break
-                    f_out.write(chunk)
-                    total_read += len(chunk)
-                    
-                    # Log de progresso a cada 2MB
-                    if total_read % (2 * 1024 * 1024) == 0:
-                        progress = (total_read / tamanho_original) * 100
-                        logger.info(f"🗜️ Compressão: {progress:.0f}% ({total_read:,}/{tamanho_original:,} bytes)")
-        
-        tamanho_final = os.path.getsize("compilacao.xml.gz")
-        ratio = (1 - tamanho_final/tamanho_original) * 100
-        
-        logger.info(f"✅ Compressão concluída:")
-        logger.info(f"   - Tamanho final: {tamanho_final:,} bytes")
-        logger.info(f"   - Ratio de compressão: {ratio:.1f}%")
-        
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Erro na compressão: {e}")
-        return False
-
-def verificar_ficheiros_finais():
-    """Verifica se os ficheiros finais foram criados corretamente"""
-    try:
-        logger.info("🔄 Verificando ficheiros finais...")
-        
-        # Verificar compilacao.xml
-        if not os.path.exists("compilacao.xml"):
-            raise Exception("compilacao.xml não encontrado")
-        
-        xml_size = os.path.getsize("compilacao.xml")
-        if xml_size < 1000:
-            raise Exception("compilacao.xml muito pequeno")
-        
-        # Verificar compilacao.xml.gz
-        if not os.path.exists("compilacao.xml.gz"):
-            raise Exception("compilacao.xml.gz não encontrado")
-        
-        gz_size = os.path.getsize("compilacao.xml.gz")
-        if gz_size < 500:
-            raise Exception("compilacao.xml.gz muito pequeno")
-        
-        # Testar descompressão
         try:
-            with gzip.open("compilacao.xml.gz", "rb") as f:
-                test_data = f.read(1000)
-                if len(test_data) < 100:
-                    raise Exception("Conteúdo descomprimido muito pequeno")
+            # Download do EPG
+            source_url = self.config.get('source_url')
+            if not source_url:
+                logger.error("URL fonte não configurada")
+                return False
+                
+            compressed_file = self._download_epg(source_url)
+            if not compressed_file:
+                return False
+            
+            # Descompressão
+            xml_file = "epg_original.xml"
+            if not self._decompress_file(compressed_file, xml_file):
+                return False
+            
+            # Validação
+            if not self._validate_xml(xml_file):
+                return False
+            
+            # Processamento
+            parser_xml = etree.XMLParser(recover=True)
+            tree = etree.parse(xml_file, parser_xml)
+            root = tree.getroot()
+            
+            # Estatísticas
+            channels = root.findall('channel')
+            programmes = root.findall('programme')
+            
+            self.stats['channels_processed'] = len(channels)
+            self.stats['programmes_processed'] = len(programmes)
+            
+            # Aplica timeshift
+            modified_count = self._process_programmes(root)
+            self.stats['programmes_modified'] = modified_count
+            
+            # Salva resultado
+            output_file = "epg_timeshift.xml"
+            self._backup_file(output_file)
+            
+            tree.write(
+                output_file,
+                encoding='utf-8',
+                xml_declaration=True,
+                pretty_print=True
+            )
+            
+            # Compressão opcional
+            final_file = self._compress_output(output_file)
+            
+            # Atualiza configuração
+            self.config['last_update'] = datetime.now().isoformat()
+            self._save_config()
+            
+            # Limpeza
+            for temp_file in [compressed_file, xml_file]:
+                if os.path.exists(temp_file):
+                    os.remove(temp_file)
+            
+            # Estatísticas finais
+            self.stats['processing_time'] = (datetime.now() - start_time).total_seconds()
+            self._log_stats()
+            
+            logger.info(f"Processamento concluído com sucesso: {final_file}")
+            return True
+            
         except Exception as e:
-            raise Exception(f"Erro ao testar descompressão: {e}")
+            logger.error(f"Erro no processamento: {e}")
+            self.stats['errors'].append(f"Erro geral: {e}")
+            return False
+    
+    def _log_stats(self):
+        """Registra estatísticas do processamento"""
+        logger.info("=== ESTATÍSTICAS DO PROCESSAMENTO ===")
+        logger.info(f"Canais processados: {self.stats['channels_processed']}")
+        logger.info(f"Programas processados: {self.stats['programmes_processed']}")
+        logger.info(f"Programas modificados: {self.stats['programmes_modified']}")
+        logger.info(f"Cache hits: {self.stats['cache_hits']}")
+        logger.info(f"Cache misses: {self.stats['cache_misses']}")
+        logger.info(f"Tempo de processamento: {self.stats['processing_time']:.2f}s")
         
-        logger.info("✅ Verificação dos ficheiros finais concluída com sucesso")
-        logger.info(f"   - compilacao.xml: {xml_size:,} bytes")
-        logger.info(f"   - compilacao.xml.gz: {gz_size:,} bytes")
-        logger.info(f"   - Ratio de compressão: {((1 - gz_size/xml_size) * 100):.1f}%")
+        if self.stats['errors']:
+            logger.warning(f"Erros encontrados: {len(self.stats['errors'])}")
+            for error in self.stats['errors']:
+                logger.warning(f"  - {error}")
+    
+    def get_stats(self) -> Dict:
+        """Retorna estatísticas do processamento"""
+        return self.stats.copy()
+    
+    def add_channel_offset(self, channel_id: str, offset_seconds: int):
+        """Adiciona offset específico para um canal"""
+        if 'channel_offsets' not in self.config:
+            self.config['channel_offsets'] = {}
         
-        return True
-        
-    except Exception as e:
-        logger.error(f"❌ Erro na verificação final: {e}")
-        return False
+        self.config['channel_offsets'][channel_id] = offset_seconds
+        self._save_config()
+        logger.info(f"Offset configurado para canal {channel_id}: {offset_seconds}s")
+    
+    def remove_channel_offset(self, channel_id: str):
+        """Remove offset específico de um canal"""
+        if 'channel_offsets' in self.config and channel_id in self.config['channel_offsets']:
+            del self.config['channel_offsets'][channel_id]
+            self._save_config()
+            logger.info(f"Offset removido para canal {channel_id}")
+    
+    def list_channel_offsets(self) -> Dict[str, int]:
+        """Lista todos os offsets de canais"""
+        return self.config.get('channel_offsets', {}).copy()
+
 
 def main():
     """Função principal"""
-    parser = argparse.ArgumentParser(description='Processador EPG com offset configurável')
-    parser.add_argument('--offset', type=int, help='Offset em segundos (pode ser negativo)')
-    parser.add_argument('--config', action='store_true', help='Usar configuração do ficheiro')
-    parser.add_argument('--set-offset', type=int, help='Definir novo offset padrão')
-    
-    args = parser.parse_args()
-    
-    # Carregar configuração
-    config = carregar_configuracao()
-    
-    # Determinar offset a usar
-    if args.set_offset is not None:
-        config['offset_seconds'] = args.set_offset
-        guardar_configuracao(config)
-        logger.info(f"✅ Offset padrão definido para {args.set_offset} segundos")
-        return True
-    
-    if args.offset is not None:
-        offset_seconds = args.offset
-        logger.info(f"🎯 Usando offset da linha de comando: {offset_seconds}s")
-    else:
-        offset_seconds = config['offset_seconds']
-        logger.info(f"🎯 Usando offset da configuração: {offset_seconds}s")
-    
-    # Limpar ficheiros anteriores
-    limpar_ficheiros_temporarios()
-    
     try:
-        # 1. Download
-        if not fazer_download(config['source_url']):
-            logger.error("❌ Falha no download. Abortando.")
-            return False
+        processor = EPGProcessor()
         
-        # 2. Descompressão
-        if not descomprimir_xml():
-            logger.error("❌ Falha na descompressão. Abortando.")
-            return False
+        # Verifica argumentos da linha de comando
+        if len(sys.argv) > 1:
+            if sys.argv[1] == '--stats':
+                # Mostra apenas estatísticas
+                processor.process_epg()
+                stats = processor.get_stats()
+                print(json.dumps(stats, indent=2))
+                return
+            elif sys.argv[1] == '--config':
+                # Mostra configuração atual
+                print(json.dumps(processor.config, indent=2))
+                return
         
-        # 3. Processamento
-        if not processar_xml(offset_seconds):
-            logger.error("❌ Falha no processamento. Abortando.")
-            return False
+        # Processamento normal
+        success = processor.process_epg()
         
-        # 4. Compressão
-        if not comprimir_xml():
-            logger.error("❌ Falha na compressão. Abortando.")
-            return False
-        
-        # 5. Verificação final
-        if not verificar_ficheiros_finais():
-            logger.error("❌ Falha na verificação final. Abortando.")
-            return False
-        
-        # Atualizar configuração com timestamp
-        config['last_update'] = datetime.now().isoformat()
-        guardar_configuracao(config)
-        
-        # Limpeza final
-        limpar_ficheiros_temporarios()
-        
-        logger.info("🎉 Processamento EPG concluído com sucesso!")
-        logger.info(f"📁 Ficheiro final: compilacao.xml.gz")
-        logger.info(f"⏰ Offset aplicado: {offset_seconds} segundos")
-        
-        return True
-        
+        if success:
+            logger.info("EPG processado com sucesso!")
+            sys.exit(0)
+        else:
+            logger.error("Falha no processamento do EPG")
+            sys.exit(1)
+            
     except KeyboardInterrupt:
-        logger.info("❌ Processamento interrompido pelo utilizador")
-        return False
+        logger.info("Processamento interrompido pelo usuário")
+        sys.exit(1)
     except Exception as e:
-        logger.error(f"❌ Erro inesperado: {e}")
-        return False
-    finally:
-        # Garantir limpeza dos ficheiros temporários
-        limpar_ficheiros_temporarios()
+        logger.error(f"Erro inesperado: {e}")
+        sys.exit(1)
+
 
 if __name__ == "__main__":
-    success = main()
-    sys.exit(0 if success else 1)
+    main()
