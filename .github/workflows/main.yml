@@ -1,443 +1,266 @@
-name: EPG Processor - Sistema Automatizado
+name: EPG Processor
 
 on:
+  # Execução automática diária às 06:00 UTC
   schedule:
-    # Executa a cada 6 horas
-    - cron: '0 */6 * * *'
+    - cron: '0 6 * * *'
   
+  # Execução manual com opções
   workflow_dispatch:
     inputs:
-      force_update:
-        description: 'Forçar atualização ignorando cache'
-        required: false
-        default: 'false'
-        type: boolean
+      execution_mode:
+        description: 'Modo de execução'
+        required: true
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - force_timeshift
+          - channel_config
       
-      debug_mode:
-        description: 'Ativar modo debug'
-        required: false
-        default: 'false'
-        type: boolean
-      
-      custom_offset:
-        description: 'Offset personalizado em segundos'
+      timeshift_seconds:
+        description: 'Timeshift em segundos (para force_timeshift)'
         required: false
         default: '30'
         type: string
-  
-  push:
-    branches: [ main, develop ]
-    paths:
-      - 'processar.py'
-      - 'config.json'
-      - 'requirements.txt'
-      - '.github/workflows/main.yml'
-
-env:
-  PYTHON_VERSION: '3.11'
-  CACHE_VERSION: 'v2'
+      
+      timeshift_duration:
+        description: 'Duração do timeshift forçado em horas'
+        required: false
+        default: '24'
+        type: string
+      
+      channel_id:
+        description: 'ID do canal (para channel_config)'
+        required: false
+        type: string
+      
+      channel_offset:
+        description: 'Offset do canal em segundos (para channel_config)'
+        required: false
+        type: string
+      
+      verbose:
+        description: 'Log detalhado'
+        required: false
+        default: false
+        type: boolean
 
 jobs:
-  validate-config:
-    name: Validar Configuração
-    runs-on: ubuntu-latest
-    outputs:
-      config-valid: ${{ steps.validate.outputs.valid }}
-      
-    steps:
-      - name: Checkout do código
-        uses: actions/checkout@v4
-        
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          
-      - name: Validar config.json
-        id: validate
-        run: |
-          python -c "
-          import json
-          import sys
-          import os
-          
-          try:
-              with open('config.json', 'r') as f:
-                  config = json.load(f)
-              
-              print('Configuração carregada com sucesso')
-              print(f'Campos encontrados: {list(config.keys())}')
-              
-              # Busca source_url em diferentes locais
-              source_url = None
-              
-              # Primeiro, tenta o campo direto
-              if 'source_url' in config:
-                  source_url = config['source_url']
-                  print(f'source_url encontrado diretamente: {source_url}')
-              
-              # Se não encontrar, tenta dentro de epg_source
-              elif 'epg_source' in config and 'source_url' in config['epg_source']:
-                  source_url = config['epg_source']['source_url']
-                  print(f'source_url encontrado em epg_source: {source_url}')
-              
-              # Se ainda não encontrar, usa URL padrão
-              if not source_url:
-                  source_url = 'https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz'
-                  print(f'Usando source_url padrão: {source_url}')
-                  
-                  # Adiciona ao config
-                  config['source_url'] = source_url
-                  
-                  # Salva config atualizado
-                  with open('config.json', 'w') as f:
-                      json.dump(config, f, indent=2)
-                  
-                  print('Configuração atualizada com source_url padrão')
-              
-              # Validação do offset
-              offset = config.get('offset_seconds', 30)
-              if not isinstance(offset, int):
-                  print(f'Convertendo offset_seconds para int: {offset}')
-                  config['offset_seconds'] = int(offset)
-                  
-                  with open('config.json', 'w') as f:
-                      json.dump(config, f, indent=2)
-              
-              # Validação da URL
-              if not source_url.startswith('http'):
-                  print(f'URL inválida: {source_url}')
-                  sys.exit(1)
-              
-              # Adiciona app_version se não existir
-              if 'app_version' not in config:
-                  config['app_version'] = '1.1.0'
-                  with open('config.json', 'w') as f:
-                      json.dump(config, f, indent=2)
-                  print('app_version adicionado')
-              
-              print('✅ Configuração validada com sucesso')
-              
-              # Define output para próximo job
-              with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
-                  f.write('valid=true\\n')
-              
-          except Exception as e:
-              print(f'❌ Erro na validação: {e}')
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
-          "
-
   process-epg:
-    name: Processar EPG
     runs-on: ubuntu-latest
-    needs: validate-config
-    if: needs.validate-config.outputs.config-valid == 'true'
     
     steps:
-      - name: Checkout do código
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-          
-      - name: Configurar Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-          cache: 'pip'
-          cache-dependency-path: 'requirements.txt'
-          
-      - name: Cache de dependências
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ env.CACHE_VERSION }}-${{ hashFiles('requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-${{ env.CACHE_VERSION }}-
-            ${{ runner.os }}-pip-
-            
-      - name: Cache EPG
-        uses: actions/cache@v4
-        with:
-          path: |
-            temp_epg.xml.gz
-            temp_epg.xml.gz.cache
-          key: epg-cache-${{ env.CACHE_VERSION }}-${{ github.run_number }}
-          restore-keys: |
-            epg-cache-${{ env.CACHE_VERSION }}-
-            epg-cache-
-            
-      - name: Instalar dependências
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          
-      - name: Verificar dependências
-        run: |
-          echo "Python: $(python --version)"
-          echo "Pip: $(pip --version)"
-          echo "Dependências instaladas:"
-          pip list
-          
-      - name: Verificar arquivos
-        run: |
-          echo "Arquivos no diretório:"
-          ls -la
-          
-          echo "Conteúdo do config.json:"
-          cat config.json
-          
-          echo "Conteúdo do requirements.txt:"
-          cat requirements.txt
-          
-      - name: Configurar modo debug
-        if: ${{ github.event.inputs.debug_mode == 'true' }}
-        run: |
-          echo "DEBUG_MODE=true" >> $GITHUB_ENV
-          echo "🔍 Modo debug ativado"
-          
-      - name: Configurar offset personalizado
-        if: ${{ github.event.inputs.custom_offset != '' && github.event.inputs.custom_offset != '30' }}
-        run: |
-          echo "🔧 Configurando offset personalizado: ${{ github.event.inputs.custom_offset }}s"
-          
-          python -c "
-          import json
-          
-          # Carrega configuração atual
-          with open('config.json', 'r') as f:
-              config = json.load(f)
-          
-          # Atualiza offset
-          config['offset_seconds'] = int('${{ github.event.inputs.custom_offset }}')
-          
-          # Salva configuração
-          with open('config.json', 'w') as f:
-              json.dump(config, f, indent=2)
-          
-          print('✅ Offset personalizado configurado')
-          "
-          
-      - name: Limpar cache (se forçado)
-        if: ${{ github.event.inputs.force_update == 'true' }}
-        run: |
-          echo "🧹 Limpando cache - forçando nova descarga"
-          rm -f temp_epg.xml.gz temp_epg.xml.gz.cache
-          
-      - name: Teste do script
-        run: |
-          echo "🧪 Testando script..."
-          python -c "
-          import sys
-          sys.path.insert(0, '.')
-          
-          try:
-              # Tenta importar o módulo
-              from processar import EPGProcessor
-              print('✅ Módulo processar importado com sucesso')
-              
-              # Tenta criar instância
-              processor = EPGProcessor()
-              print('✅ EPGProcessor criado com sucesso')
-              
-              # Verifica configuração
-              print(f'📋 Configuração carregada: {len(processor.config)} campos')
-              
-          except Exception as e:
-              print(f'❌ Erro no teste: {e}')
-              import traceback
-              traceback.print_exc()
-              sys.exit(1)
-          "
-          
-      - name: Processar EPG
-        id: process
-        run: |
-          echo "🚀 Iniciando processamento EPG..."
-          
-          # Configura timeout e executa
-          timeout 1800 python processar.py 2>&1 | tee process.log || {
-            echo "❌ Processamento falhou ou excedeu timeout"
-            echo "📋 Últimas 20 linhas do log:"
-            tail -20 process.log
-            exit 1
-          }
-          
-          # Verifica se o arquivo foi criado
-          if [ -f "epg_timeshift.xml" ] || [ -f "epg_timeshift.xml.gz" ]; then
-            echo "✅ EPG processado com sucesso"
-            echo "success=true" >> $GITHUB_OUTPUT
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+        cache: 'pip'
+    
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+    
+    - name: Configure Git
+      run: |
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+    
+    - name: Execute EPG Processing - Auto Mode
+      if: github.event.inputs.execution_mode == 'auto' || github.event.inputs.execution_mode == ''
+      run: |
+        echo "=== EXECUÇÃO AUTOMÁTICA DIÁRIA ==="
+        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
+          python run_manager.py --auto --verbose
+        else
+          python run_manager.py --auto
+        fi
+    
+    - name: Execute EPG Processing - Force Timeshift
+      if: github.event.inputs.execution_mode == 'force_timeshift'
+      run: |
+        echo "=== EXECUÇÃO COM TIMESHIFT FORÇADO ==="
+        TIMESHIFT="${{ github.event.inputs.timeshift_seconds }}"
+        DURATION="${{ github.event.inputs.timeshift_duration }}"
+        
+        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
+          python run_manager.py --force ${TIMESHIFT} --force-duration ${DURATION} --verbose
+        else
+          python run_manager.py --force ${TIMESHIFT} --force-duration ${DURATION}
+        fi
+    
+    - name: Execute EPG Processing - Channel Config
+      if: github.event.inputs.execution_mode == 'channel_config'
+      run: |
+        echo "=== CONFIGURAÇÃO DE CANAL ESPECÍFICO ==="
+        CHANNEL_ID="${{ github.event.inputs.channel_id }}"
+        CHANNEL_OFFSET="${{ github.event.inputs.channel_offset }}"
+        
+        if [ -z "$CHANNEL_ID" ] || [ -z "$CHANNEL_OFFSET" ]; then
+          echo "Erro: channel_id e channel_offset são obrigatórios para channel_config"
+          exit 1
+        fi
+        
+        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
+          python run_manager.py --channel "$CHANNEL_ID" "$CHANNEL_OFFSET" --verbose
+        else
+          python run_manager.py --channel "$CHANNEL_ID" "$CHANNEL_OFFSET"
+        fi
+    
+    - name: Check for Android sync
+      run: |
+        if [ -f "android_config.json" ]; then
+          echo "=== SINCRONIZAÇÃO COM ANDROID DETECTADA ==="
+          python run_manager.py --android-sync
+        fi
+    
+    - name: Generate status report
+      run: |
+        echo "=== RELATÓRIO DE STATUS ==="
+        python run_manager.py --status
+    
+    - name: List configured channels
+      run: |
+        echo "=== CANAIS CONFIGURADOS ==="
+        python run_manager.py --list-channels
+    
+    - name: Upload artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: epg-processing-results
+        path: |
+          epg_processed.xml
+          epg_processed.xml.gz
+          metrics_report.json
+          android_status.json
+          epg_processor.log
+        retention-days: 30
+    
+    - name: Commit changes
+      run: |
+        git add -A
+        
+        # Verifica se há mudanças
+        if git diff --staged --quiet; then
+          echo "Nenhuma mudança para commit"
+        else
+          # Determina mensagem de commit baseada no modo
+          if [ "${{ github.event.inputs.execution_mode }}" = "force_timeshift" ]; then
+            COMMIT_MSG="EPG processado com timeshift forçado: ${{ github.event.inputs.timeshift_seconds }}s"
+          elif [ "${{ github.event.inputs.execution_mode }}" = "channel_config" ]; then
+            COMMIT_MSG="EPG processado - Canal ${{ github.event.inputs.channel_id }} configurado: ${{ github.event.inputs.channel_offset }}s"
           else
-            echo "❌ Falha: arquivo de saída não encontrado"
-            echo "📁 Arquivos no diretório:"
-            ls -la
-            exit 1
+            COMMIT_MSG="EPG processado automaticamente - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           fi
           
-      - name: Gerar estatísticas
-        if: steps.process.outputs.success == 'true'
-        run: |
-          echo "📊 Gerando estatísticas..."
-          
-          # Tenta gerar estatísticas
-          python processar.py --stats > stats.json 2>&1 || {
-            echo "⚠️ Erro ao gerar estatísticas detalhadas"
-            echo '{"error": "Não foi possível gerar estatísticas"}' > stats.json
-          }
-          
-          # Exibe estatísticas
-          echo "=== ESTATÍSTICAS DO PROCESSAMENTO ==="
-          cat stats.json
-          
-          # Verifica tamanho do arquivo
-          if [ -f "epg_timeshift.xml.gz" ]; then
-            FILE_SIZE=$(stat -c%s epg_timeshift.xml.gz)
-            echo "📦 Tamanho do arquivo comprimido: $FILE_SIZE bytes"
-            echo "OUTPUT_FILE=epg_timeshift.xml.gz" >> $GITHUB_ENV
-          elif [ -f "epg_timeshift.xml" ]; then
-            FILE_SIZE=$(stat -c%s epg_timeshift.xml)
-            echo "📄 Tamanho do arquivo XML: $FILE_SIZE bytes"
-            echo "OUTPUT_FILE=epg_timeshift.xml" >> $GITHUB_ENV
-          fi
-          
-      - name: Validar arquivo de saída
-        if: steps.process.outputs.success == 'true'
-        run: |
-          echo "🔍 Validando arquivo de saída..."
-          
-          if [ -f "epg_timeshift.xml.gz" ]; then
-            echo "📦 Validando arquivo comprimido..."
-            gunzip -t epg_timeshift.xml.gz && echo "✅ Arquivo GZ válido"
-          elif [ -f "epg_timeshift.xml" ]; then
-            echo "📄 Validando arquivo XML..."
-            python -c "
-            from lxml import etree
-            try:
-                tree = etree.parse('epg_timeshift.xml')
-                root = tree.getroot()
-                channels = len(root.findall('channel'))
-                programmes = len(root.findall('programme'))
-                print(f'✅ XML válido: {channels} canais, {programmes} programas')
-            except Exception as e:
-                print(f'❌ Erro na validação: {e}')
-                exit(1)
-            "
-          else
-            echo "❌ Arquivo de saída não encontrado"
-            exit 1
-          fi
-          
-      - name: Upload dos artefatos
-        if: steps.process.outputs.success == 'true'
-        uses: actions/upload-artifact@v4
-        with:
-          name: epg-processed-${{ github.run_number }}
-          path: |
-            ${{ env.OUTPUT_FILE }}
-            stats.json
-            epg_processor.log
-            process.log
-            config.json
-          retention-days: 30
-          
-      - name: Criar release
-        if: steps.process.outputs.success == 'true' && github.ref == 'refs/heads/main'
-        uses: softprops/action-gh-release@v1
-        with:
-          tag_name: "epg-${{ github.run_number }}"
-          name: "EPG Timeshift - ${{ github.run_number }}"
-          body: |
-            ## 📺 EPG Processado Automaticamente
-            
-            **🕐 Data:** ${{ github.event.head_commit.timestamp }}
-            **🔗 Commit:** ${{ github.sha }}
-            **👤 Executado por:** ${{ github.actor }}
-            
-            ### 📊 Estatísticas
-            ```json
-            ${{ steps.process.outputs.stats }}
-            ```
-            
-            ### 📁 Arquivos incluídos
-            - `${{ env.OUTPUT_FILE }}` - EPG com timeshift aplicado
-            - `stats.json` - Estatísticas do processamento
-            - `epg_processor.log` - Log detalhado do processamento
-            - `process.log` - Log da execução
-            
-            ### ⚙️ Configuração utilizada
-            - **Offset:** ${{ github.event.inputs.custom_offset || '30' }}s
-            - **Cache:** ${{ github.event.inputs.force_update == 'true' && 'Desabilitado' || 'Habilitado' }}
-            - **Debug:** ${{ github.event.inputs.debug_mode == 'true' && 'Ativado' || 'Desativado' }}
-            
-          files: |
-            ${{ env.OUTPUT_FILE }}
-            stats.json
-            epg_processor.log
-            process.log
-          draft: false
-          prerelease: false
-          
-      - name: Atualizar configuração
-        if: steps.process.outputs.success == 'true' && github.ref == 'refs/heads/main'
-        run: |
-          echo "🔄 Atualizando timestamp da configuração..."
-          
-          git config --local user.email "action@github.com"
-          git config --local user.name "GitHub Action"
-          
-          # Atualizar timestamp no config.json
-          python -c "
-          import json
-          from datetime import datetime
-          
-          with open('config.json', 'r') as f:
-              config = json.load(f)
-          
-          config['last_update'] = datetime.now().isoformat()
-          
-          with open('config.json', 'w') as f:
-              json.dump(config, f, indent=2)
-          
-          print('✅ Timestamp atualizado')
-          "
-          
-          # Commit apenas se houver mudanças
-          git add config.json
-          git diff --staged --quiet || {
-            git commit -m "🤖 Atualização automática EPG - $(date)"
-            git push
-            echo "✅ Configuração commitada"
-          }
-          
-      - name: Log final
-        if: always()
-        run: |
-          echo "📋 RESUMO DA EXECUÇÃO"
-          echo "Status: ${{ job.status }}"
-          echo "Sucesso no processamento: ${{ steps.process.outputs.success }}"
-          
-          if [ -f "epg_processor.log" ]; then
-            echo "📄 Últimas linhas do log:"
-            tail -10 epg_processor.log
-          fi
+          git commit -m "$COMMIT_MSG"
+          git push
+        fi
+    
+    - name: Cleanup old artifacts
+      run: |
+        # Remove backups muito antigos
+        find . -name "*.backup_*" -type f -mtime +7 -delete || true
+        
+        # Remove logs antigos
+        find . -name "*.log.*" -type f -mtime +30 -delete || true
+        
+        # Remove cache antigo
+        find . -name "cache_*.xml.gz" -type f -mtime +2 -delete || true
+    
+    - name: Notification on failure
+      if: failure()
+      run: |
+        echo "=== ERRO NO PROCESSAMENTO EPG ==="
+        echo "Modo de execução: ${{ github.event.inputs.execution_mode }}"
+        echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+        
+        # Mostra últimas linhas do log
+        if [ -f "epg_processor.log" ]; then
+          echo "Últimas linhas do log:"
+          tail -20 epg_processor.log
+        fi
+        
+        # Cria issue automático se configurado
+        if [ -n "${{ secrets.GITHUB_TOKEN }}" ]; then
+          echo "Issue de erro será criado automaticamente"
+        fi
 
-  cleanup:
-    name: Limpeza
+  # Job para criar issue em caso de falha
+  create-issue-on-failure:
+    needs: process-epg
     runs-on: ubuntu-latest
-    needs: [validate-config, process-epg]
-    if: always()
+    if: failure()
     
     steps:
-      - name: Limpar artefatos antigos
-        uses: geekyeggo/delete-artifact@v5
-        with:
-          name: epg-processed-*
-          useGlob: true
-          failOnError: false
+    - name: Create issue on failure
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const title = `EPG Processing Failed - ${new Date().toISOString().split('T')[0]}`;
+          const body = `
+          ## EPG Processing Failure Report
           
-      - name: Status final
-        run: |
-          echo "🏁 Workflow concluído"
-          echo "Validação: ${{ needs.validate-config.result }}"
-          echo "Processamento: ${{ needs.process-epg.result }}"
+          **Timestamp:** ${new Date().toISOString()}
+          **Execution Mode:** ${{ github.event.inputs.execution_mode || 'auto' }}
+          **Run ID:** ${{ github.run_id }}
+          
+          ### Parameters
+          - Timeshift: ${{ github.event.inputs.timeshift_seconds || 'default' }}s
+          - Duration: ${{ github.event.inputs.timeshift_duration || '24' }}h
+          - Channel: ${{ github.event.inputs.channel_id || 'N/A' }}
+          - Channel Offset: ${{ github.event.inputs.channel_offset || 'N/A' }}s
+          
+          ### Action Required
+          Please check the workflow logs for detailed error information.
+          
+          **Workflow URL:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          
+          ### Auto-generated by GitHub Actions
+          This issue was created automatically due to EPG processing failure.
+          `;
+          
+          github.rest.issues.create({
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            title: title,
+            body: body,
+            labels: ['bug', 'epg-processing', 'automated']
+          });
+
+  # Job para limpeza semanal
+  weekly-cleanup:
+    runs-on: ubuntu-latest
+    if: github.event.schedule == '0 6 * * 0'  # Domingos
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+      with:
+        token: ${{ secrets.GITHUB_TOKEN }}
+    
+    - name: Weekly cleanup
+      run: |
+        echo "=== LIMPEZA SEMANAL ==="
+        
+        # Remove arquivos temporários antigos
+        find . -name "*.tmp" -type f -mtime +7 -delete || true
+        find . -name "*.cache" -type f -mtime +7 -delete || true
+        find . -name "cache_*.xml.gz" -type f -mtime +7 -delete || true
+        
+        # Remove logs muito antigos
+        find . -name "*.log.*" -type f -mtime +30 -delete || true
+        
+        # Remove backups muito antigos
+        find . -name "*.backup_*" -type f -mtime +14 -delete || true
+        
+        # Otimiza git
+        git gc --aggressive --prune=now || true
+        
+        echo "Limpeza semanal concluída"
