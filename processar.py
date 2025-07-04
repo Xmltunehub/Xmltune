@@ -1,7 +1,15 @@
 #!/usr/bin/env python3
 """
-EPG Processor - Versão Otimizada
-Sistema de processamento automático de EPG com timeshift dinâmico
+EPG Processor - Sistema de processamento automático de EPG
+Versão 1.1.0 - Otimizada com timeshift dinâmico e integração Android
+
+Funcionalidades:
+- Timeshift dinâmico por canal
+- Execução automática diária
+- Força run com timeshift específico
+- Integração com app Android
+- Sistema de cache inteligente
+- Métricas detalhadas
 """
 
 import os
@@ -10,13 +18,12 @@ import json
 import gzip
 import hashlib
 import logging
+import argparse
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
-from pathlib import Path
-
+from typing import Dict, Optional, List, Tuple
 import requests
 from lxml import etree
-from dateutil import parser, tz
+from dateutil import parser as date_parser
 
 # Configuração de logging
 logging.basicConfig(
@@ -30,19 +37,19 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class EPGProcessor:
-    """Processador EPG com funcionalidades avançadas"""
+    """Classe principal para processamento de EPG"""
     
     def __init__(self, config_path: str = "config.json"):
+        """Inicializa o processador EPG"""
         self.config_path = config_path
         self.config = self._load_config()
-        self.stats = {
+        self.metrics = {
+            'start_time': datetime.now(),
             'channels_processed': 0,
             'programmes_processed': 0,
-            'programmes_modified': 0,
+            'errors': [],
             'cache_hits': 0,
-            'cache_misses': 0,
-            'processing_time': 0,
-            'errors': []
+            'cache_misses': 0
         }
         
     def _load_config(self) -> Dict:
@@ -51,432 +58,483 @@ class EPGProcessor:
             with open(self.config_path, 'r', encoding='utf-8') as f:
                 config = json.load(f)
                 
-            # Configurações padrão
-            default_config = {
-                "offset_seconds": 30,
-                "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-                "last_update": None,
-                "app_version": "1.0.0",
-                "cache_enabled": True,
-                "cache_duration_hours": 24,
-                "validation_enabled": True,
-                "channel_offsets": {},
-                "user_profiles": {},
-                "output_format": "xml",
-                "compression_enabled": True,
-                "backup_enabled": True,
-                "max_retries": 3,
-                "timeout_seconds": 30,
-                "timezone": "Europe/Lisbon"
-            }
-            
-            # Merge configurações
-            for key, value in default_config.items():
-                if key not in config:
-                    config[key] = value
-                    
+            # Verifica se é formato antigo e converte
+            if 'offset_seconds' in config and 'timeshift' not in config:
+                config = self._convert_old_config(config)
+                
             return config
-            
         except FileNotFoundError:
-            logger.warning(f"Arquivo de configuração {self.config_path} não encontrado. Usando configuração padrão.")
-            return self._create_default_config()
+            logger.error(f"Arquivo de configuração não encontrado: {self.config_path}")
+            return self._get_default_config()
         except json.JSONDecodeError as e:
-            logger.error(f"Erro ao carregar configuração: {e}")
-            return self._create_default_config()
+            logger.error(f"Erro ao decodificar JSON: {e}")
+            return self._get_default_config()
     
-    def _create_default_config(self) -> Dict:
-        """Cria configuração padrão"""
-        config = {
-            "offset_seconds": 30,
-            "source_url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-            "last_update": None,
-            "app_version": "1.0.0",
-            "cache_enabled": True,
-            "cache_duration_hours": 24,
-            "validation_enabled": True,
-            "channel_offsets": {},
-            "user_profiles": {},
-            "output_format": "xml",
-            "compression_enabled": True,
-            "backup_enabled": True,
-            "max_retries": 3,
-            "timeout_seconds": 30,
-            "timezone": "Europe/Lisbon"
-        }
+    def _convert_old_config(self, old_config: Dict) -> Dict:
+        """Converte configuração antiga para novo formato"""
+        logger.info("Convertendo configuração para novo formato...")
         
-        # Salva configuração padrão
+        new_config = self._get_default_config()
+        
+        # Migra valores antigos
+        if 'offset_seconds' in old_config:
+            new_config['timeshift']['default_offset_seconds'] = old_config['offset_seconds']
+        if 'source_url' in old_config:
+            new_config['source']['url'] = old_config['source_url']
+        if 'last_update' in old_config:
+            new_config['last_update'] = old_config['last_update']
+        if 'app_version' in old_config:
+            new_config['app_version'] = old_config['app_version']
+            
+        # Salva nova configuração
+        self._save_config(new_config)
+        return new_config
+    
+    def _get_default_config(self) -> Dict:
+        """Retorna configuração padrão"""
+        return {
+            "app_version": "1.1.0",
+            "last_update": datetime.now().isoformat(),
+            "timeshift": {
+                "default_offset_seconds": 30,
+                "per_channel": {},
+                "force_offset": None,
+                "force_offset_expiry": None
+            },
+            "source": {
+                "url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
+                "backup_urls": [],
+                "timeout": 300,
+                "retry_attempts": 3
+            },
+            "processing": {
+                "enable_cache": True,
+                "cache_duration_hours": 24,
+                "validate_xml": True,
+                "generate_metrics": True,
+                "compress_output": False
+            },
+            "output": {
+                "filename": "epg_processed.xml",
+                "keep_backups": 3,
+                "include_metadata": True
+            },
+            "scheduling": {
+                "auto_run": True,
+                "run_time": "06:00",
+                "timezone": "Europe/Lisbon"
+            },
+            "android_integration": {
+                "api_enabled": False,
+                "api_port": 8080,
+                "api_key": None,
+                "allow_remote_config": True,
+                "sync_interval_minutes": 60
+            },
+            "logging": {
+                "level": "INFO",
+                "keep_logs_days": 30,
+                "detailed_metrics": True
+            },
+            "profiles": {
+                "default": {
+                    "name": "Configuração Padrão",
+                    "active": True,
+                    "description": "Perfil padrão para processamento automático"
+                }
+            }
+        }
+    
+    def _save_config(self, config: Dict = None) -> None:
+        """Salva configuração no arquivo JSON"""
+        if config is None:
+            config = self.config
+            
+        config['last_update'] = datetime.now().isoformat()
+        
         try:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 json.dump(config, f, indent=2, ensure_ascii=False)
-            logger.info(f"Configuração padrão criada em {self.config_path}")
-        except Exception as e:
-            logger.error(f"Erro ao criar configuração padrão: {e}")
-            
-        return config
-    
-    def _save_config(self):
-        """Salva configuração atual"""
-        try:
-            with open(self.config_path, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
+            logger.info("Configuração salva com sucesso")
         except Exception as e:
             logger.error(f"Erro ao salvar configuração: {e}")
     
-    def _get_file_hash(self, file_path: str) -> str:
-        """Calcula hash SHA256 do arquivo"""
-        try:
-            with open(file_path, 'rb') as f:
-                return hashlib.sha256(f.read()).hexdigest()
-        except Exception as e:
-            logger.error(f"Erro ao calcular hash: {e}")
-            return ""
+    def _get_cache_key(self, url: str) -> str:
+        """Gera chave de cache baseada na URL"""
+        return hashlib.md5(url.encode()).hexdigest()
     
-    def _is_cache_valid(self, file_path: str) -> bool:
-        """Verifica se o cache ainda é válido"""
-        if not self.config.get('cache_enabled', True):
-            return False
-            
-        cache_file = f"{file_path}.cache"
+    def _is_cache_valid(self, cache_file: str) -> bool:
+        """Verifica se cache é válido"""
         if not os.path.exists(cache_file):
             return False
             
-        try:
-            cache_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
-            max_age = timedelta(hours=self.config.get('cache_duration_hours', 24))
-            return cache_age < max_age
-        except Exception:
-            return False
+        cache_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(cache_file))
+        max_age = timedelta(hours=self.config['processing']['cache_duration_hours'])
+        
+        return cache_age < max_age
     
-    def _download_epg(self, url: str) -> Optional[str]:
-        """Download do arquivo EPG com retry e cache"""
-        temp_file = "temp_epg.xml.gz"
+    def _download_epg(self, url: str) -> Optional[bytes]:
+        """Baixa EPG da URL com sistema de cache"""
+        cache_enabled = self.config['processing']['enable_cache']
+        cache_file = f"cache_{self._get_cache_key(url)}.xml.gz"
         
         # Verifica cache
-        if self._is_cache_valid(temp_file):
-            logger.info("Usando EPG em cache")
-            self.stats['cache_hits'] += 1
-            return temp_file
-            
-        self.stats['cache_misses'] += 1
-        
-        for attempt in range(self.config.get('max_retries', 3)):
+        if cache_enabled and self._is_cache_valid(cache_file):
+            logger.info("Usando EPG do cache")
+            self.metrics['cache_hits'] += 1
             try:
-                logger.info(f"Tentativa {attempt + 1} de download do EPG...")
-                
-                response = requests.get(
+                with open(cache_file, 'rb') as f:
+                    return f.read()
+            except Exception as e:
+                logger.warning(f"Erro ao ler cache: {e}")
+        
+        # Download novo
+        self.metrics['cache_misses'] += 1
+        logger.info(f"Baixando EPG de: {url}")
+        
+        session = requests.Session()
+        session.headers.update({
+            'User-Agent': 'EPG-Processor/1.1.0'
+        })
+        
+        for attempt in range(self.config['source']['retry_attempts']):
+            try:
+                response = session.get(
                     url,
-                    timeout=self.config.get('timeout_seconds', 30),
+                    timeout=self.config['source']['timeout'],
                     stream=True
                 )
                 response.raise_for_status()
                 
-                with open(temp_file, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        f.write(chunk)
+                content = response.content
                 
-                # Cria arquivo de cache
-                if self.config.get('cache_enabled', True):
-                    cache_file = f"{temp_file}.cache"
-                    Path(cache_file).touch()
+                # Salva no cache
+                if cache_enabled:
+                    try:
+                        with open(cache_file, 'wb') as f:
+                            f.write(content)
+                        logger.info("EPG salvo no cache")
+                    except Exception as e:
+                        logger.warning(f"Erro ao salvar cache: {e}")
                 
-                logger.info(f"EPG baixado com sucesso ({os.path.getsize(temp_file)} bytes)")
-                return temp_file
+                return content
                 
-            except requests.RequestException as e:
-                logger.error(f"Erro no download (tentativa {attempt + 1}): {e}")
-                if attempt == self.config.get('max_retries', 3) - 1:
-                    self.stats['errors'].append(f"Falha no download após {self.config.get('max_retries', 3)} tentativas")
-                    return None
-                    
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Tentativa {attempt + 1} falhou: {e}")
+                if attempt == self.config['source']['retry_attempts'] - 1:
+                    raise
+        
         return None
     
-    def _decompress_file(self, compressed_file: str, output_file: str) -> bool:
-        """Descomprime arquivo gz"""
-        try:
-            with gzip.open(compressed_file, 'rb') as f_in:
-                with open(output_file, 'wb') as f_out:
-                    f_out.write(f_in.read())
-            return True
-        except Exception as e:
-            logger.error(f"Erro na descompressão: {e}")
-            self.stats['errors'].append(f"Erro na descompressão: {e}")
-            return False
-    
-    def _validate_xml(self, xml_file: str) -> bool:
-        """Valida estrutura XML do EPG"""
-        if not self.config.get('validation_enabled', True):
-            return True
-            
-        try:
-            parser_xml = etree.XMLParser(recover=True)
-            tree = etree.parse(xml_file, parser_xml)
-            root = tree.getroot()
-            
-            # Validações básicas
-            if root.tag != 'tv':
-                logger.error("XML inválido: elemento raiz deve ser 'tv'")
-                return False
-                
-            channels = root.findall('channel')
-            programmes = root.findall('programme')
-            
-            if len(channels) == 0:
-                logger.error("XML inválido: nenhum canal encontrado")
-                return False
-                
-            if len(programmes) == 0:
-                logger.error("XML inválido: nenhum programa encontrado")
-                return False
-                
-            logger.info(f"XML válido: {len(channels)} canais, {len(programmes)} programas")
-            return True
-            
-        except Exception as e:
-            logger.error(f"Erro na validação XML: {e}")
-            self.stats['errors'].append(f"Erro na validação XML: {e}")
-            return False
-    
     def _get_channel_offset(self, channel_id: str) -> int:
-        """Obtém offset específico do canal"""
-        channel_offsets = self.config.get('channel_offsets', {})
-        return channel_offsets.get(channel_id, self.config.get('offset_seconds', 30))
+        """Obtém offset específico para canal"""
+        # Verifica se há offset forçado ativo
+        force_offset = self.config['timeshift'].get('force_offset')
+        force_expiry = self.config['timeshift'].get('force_offset_expiry')
+        
+        if force_offset is not None and force_expiry:
+            expiry_time = datetime.fromisoformat(force_expiry)
+            if datetime.now() < expiry_time:
+                logger.info(f"Usando offset forçado: {force_offset}s")
+                return force_offset
+            else:
+                # Remove offset expirado
+                self.config['timeshift']['force_offset'] = None
+                self.config['timeshift']['force_offset_expiry'] = None
+        
+        # Verifica offset específico do canal
+        per_channel = self.config['timeshift'].get('per_channel', {})
+        if channel_id in per_channel:
+            return per_channel[channel_id]
+        
+        # Retorna offset padrão
+        return self.config['timeshift']['default_offset_seconds']
     
     def _apply_timeshift(self, time_str: str, offset_seconds: int) -> str:
-        """Aplica timeshift ao timestamp"""
+        """Aplica timeshift a uma string de tempo"""
         try:
-            # Parse do timestamp
-            dt = parser.parse(time_str)
-            
-            # Garante timezone
-            if dt.tzinfo is None:
-                timezone = tz.gettz(self.config.get('timezone', 'Europe/Lisbon'))
-                dt = dt.replace(tzinfo=timezone)
+            # Parse da data/hora
+            dt = date_parser.parse(time_str)
             
             # Aplica offset
             dt_shifted = dt + timedelta(seconds=offset_seconds)
             
             # Retorna no formato original
-            return dt_shifted.strftime('%Y%m%d%H%M%S %z')
+            return dt_shifted.strftime('%Y%m%d%H%M%S %z').strip()
             
         except Exception as e:
-            logger.error(f"Erro ao aplicar timeshift: {e}")
+            logger.warning(f"Erro ao aplicar timeshift em '{time_str}': {e}")
             return time_str
     
-    def _process_programmes(self, root) -> int:
-        """Processa programas com timeshift dinâmico"""
-        programmes = root.findall('programme')
-        modified_count = 0
-        
-        for programme in programmes:
-            try:
+    def _process_xml(self, xml_content: bytes) -> Optional[str]:
+        """Processa conteúdo XML aplicando timeshift"""
+        try:
+            # Descomprime se necessário
+            if xml_content.startswith(b'\x1f\x8b'):
+                xml_content = gzip.decompress(xml_content)
+            
+            # Parse XML
+            root = etree.fromstring(xml_content)
+            
+            # Processa canais
+            channels = root.findall('.//channel')
+            for channel in channels:
+                channel_id = channel.get('id', '')
+                self.metrics['channels_processed'] += 1
+                
+                # Log detalhado se habilitado
+                if self.config['logging']['detailed_metrics']:
+                    logger.debug(f"Processando canal: {channel_id}")
+            
+            # Processa programas
+            programmes = root.findall('.//programme')
+            for programme in programmes:
                 channel_id = programme.get('channel', '')
                 offset = self._get_channel_offset(channel_id)
                 
-                # Aplica timeshift em start e stop
-                start_time = programme.get('start')
-                stop_time = programme.get('stop')
+                # Aplica timeshift nos horários
+                if 'start' in programme.attrib:
+                    programme.set('start', self._apply_timeshift(programme.get('start'), offset))
                 
-                if start_time:
-                    new_start = self._apply_timeshift(start_time, offset)
-                    if new_start != start_time:
-                        programme.set('start', new_start)
-                        modified_count += 1
+                if 'stop' in programme.attrib:
+                    programme.set('stop', self._apply_timeshift(programme.get('stop'), offset))
                 
-                if stop_time:
-                    new_stop = self._apply_timeshift(stop_time, offset)
-                    if new_stop != stop_time:
-                        programme.set('stop', new_stop)
-                        modified_count += 1
-                
-            except Exception as e:
-                logger.error(f"Erro ao processar programa: {e}")
-                self.stats['errors'].append(f"Erro ao processar programa: {e}")
+                self.metrics['programmes_processed'] += 1
+            
+            # Adiciona metadados se habilitado
+            if self.config['output']['include_metadata']:
+                self._add_metadata(root)
+            
+            # Converte para string
+            xml_str = etree.tostring(root, encoding='unicode', pretty_print=True)
+            
+            # Validação XML se habilitada
+            if self.config['processing']['validate_xml']:
+                self._validate_xml(xml_str)
+            
+            return xml_str
+            
+        except Exception as e:
+            logger.error(f"Erro ao processar XML: {e}")
+            self.metrics['errors'].append(str(e))
+            return None
+    
+    def _add_metadata(self, root) -> None:
+        """Adiciona metadados ao XML"""
+        try:
+            # Encontra ou cria elemento de metadados
+            metadata = root.find('.//metadata')
+            if metadata is None:
+                metadata = etree.SubElement(root, 'metadata')
+            
+            # Adiciona informações de processamento
+            process_info = etree.SubElement(metadata, 'processing')
+            process_info.set('processor', 'EPG-Processor')
+            process_info.set('version', self.config['app_version'])
+            process_info.set('timestamp', datetime.now().isoformat())
+            process_info.set('timeshift_applied', 'true')
+            
+        except Exception as e:
+            logger.warning(f"Erro ao adicionar metadados: {e}")
+    
+    def _validate_xml(self, xml_content: str) -> bool:
+        """Valida estrutura XML"""
+        try:
+            etree.fromstring(xml_content.encode())
+            logger.info("XML válido")
+            return True
+        except etree.XMLSyntaxError as e:
+            logger.error(f"XML inválido: {e}")
+            self.metrics['errors'].append(f"XML inválido: {e}")
+            return False
+    
+    def _save_output(self, xml_content: str) -> None:
+        """Salva XML processado"""
+        output_file = self.config['output']['filename']
         
-        return modified_count
+        try:
+            # Cria backup se necessário
+            if os.path.exists(output_file):
+                self._create_backup(output_file)
+            
+            # Salva arquivo
+            if self.config['processing']['compress_output']:
+                # Salva comprimido
+                with gzip.open(f"{output_file}.gz", 'wt', encoding='utf-8') as f:
+                    f.write(xml_content)
+                logger.info(f"EPG salvo comprimido: {output_file}.gz")
+            else:
+                # Salva normal
+                with open(output_file, 'w', encoding='utf-8') as f:
+                    f.write(xml_content)
+                logger.info(f"EPG salvo: {output_file}")
+            
+        except Exception as e:
+            logger.error(f"Erro ao salvar arquivo: {e}")
+            self.metrics['errors'].append(f"Erro ao salvar: {e}")
     
-    def _backup_file(self, file_path: str):
-        """Cria backup do arquivo"""
-        if not self.config.get('backup_enabled', True):
+    def _create_backup(self, filename: str) -> None:
+        """Cria backup do arquivo existente"""
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        backup_name = f"{filename}.backup_{timestamp}"
+        
+        try:
+            os.rename(filename, backup_name)
+            logger.info(f"Backup criado: {backup_name}")
+            
+            # Limpa backups antigos
+            self._cleanup_old_backups()
+            
+        except Exception as e:
+            logger.warning(f"Erro ao criar backup: {e}")
+    
+    def _cleanup_old_backups(self) -> None:
+        """Remove backups antigos"""
+        max_backups = self.config['output']['keep_backups']
+        base_name = self.config['output']['filename']
+        
+        try:
+            # Lista backups
+            backups = [f for f in os.listdir('.') if f.startswith(f"{base_name}.backup_")]
+            backups.sort(reverse=True)  # Mais recentes primeiro
+            
+            # Remove excessos
+            for backup in backups[max_backups:]:
+                os.remove(backup)
+                logger.info(f"Backup antigo removido: {backup}")
+                
+        except Exception as e:
+            logger.warning(f"Erro ao limpar backups: {e}")
+    
+    def _generate_metrics_report(self) -> None:
+        """Gera relatório de métricas"""
+        if not self.config['processing']['generate_metrics']:
             return
-            
+        
+        end_time = datetime.now()
+        duration = end_time - self.metrics['start_time']
+        
+        report = {
+            'timestamp': end_time.isoformat(),
+            'duration_seconds': duration.total_seconds(),
+            'channels_processed': self.metrics['channels_processed'],
+            'programmes_processed': self.metrics['programmes_processed'],
+            'cache_hits': self.metrics['cache_hits'],
+            'cache_misses': self.metrics['cache_misses'],
+            'errors': self.metrics['errors'],
+            'config_version': self.config['app_version']
+        }
+        
         try:
-            backup_path = f"{file_path}.backup_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            if os.path.exists(file_path):
-                os.rename(file_path, backup_path)
-                logger.info(f"Backup criado: {backup_path}")
-        except Exception as e:
-            logger.error(f"Erro ao criar backup: {e}")
-    
-    def _compress_output(self, xml_file: str) -> Optional[str]:
-        """Comprime arquivo de saída"""
-        if not self.config.get('compression_enabled', True):
-            return xml_file
+            with open('metrics_report.json', 'w', encoding='utf-8') as f:
+                json.dump(report, f, indent=2, ensure_ascii=False)
             
-        try:
-            compressed_file = f"{xml_file}.gz"
-            with open(xml_file, 'rb') as f_in:
-                with gzip.open(compressed_file, 'wb') as f_out:
-                    f_out.write(f_in.read())
-            
-            # Remove arquivo original
-            os.remove(xml_file)
-            logger.info(f"Arquivo comprimido: {compressed_file}")
-            return compressed_file
+            logger.info(f"Processamento concluído:")
+            logger.info(f"  - Duração: {duration.total_seconds():.2f}s")
+            logger.info(f"  - Canais: {self.metrics['channels_processed']}")
+            logger.info(f"  - Programas: {self.metrics['programmes_processed']}")
+            logger.info(f"  - Erros: {len(self.metrics['errors'])}")
             
         except Exception as e:
-            logger.error(f"Erro na compressão: {e}")
-            return xml_file
+            logger.error(f"Erro ao gerar relatório: {e}")
     
-    def process_epg(self) -> bool:
-        """Processa EPG completo"""
-        start_time = datetime.now()
+    def set_force_timeshift(self, offset_seconds: int, duration_hours: int = 24) -> None:
+        """Define offset forçado por tempo limitado"""
+        expiry = datetime.now() + timedelta(hours=duration_hours)
+        
+        self.config['timeshift']['force_offset'] = offset_seconds
+        self.config['timeshift']['force_offset_expiry'] = expiry.isoformat()
+        
+        self._save_config()
+        logger.info(f"Offset forçado definido: {offset_seconds}s por {duration_hours}h")
+    
+    def set_channel_timeshift(self, channel_id: str, offset_seconds: int) -> None:
+        """Define offset específico para canal"""
+        self.config['timeshift']['per_channel'][channel_id] = offset_seconds
+        self._save_config()
+        logger.info(f"Offset do canal {channel_id} definido: {offset_seconds}s")
+    
+    def get_channel_list(self) -> List[Dict]:
+        """Retorna lista de canais para app Android"""
+        # Esta função será expandida na próxima etapa
+        return []
+    
+    def process(self) -> bool:
+        """Executa processamento completo"""
         logger.info("Iniciando processamento EPG...")
         
         try:
-            # Download do EPG
-            source_url = self.config.get('source_url')
-            if not source_url:
-                logger.error("URL fonte não configurada")
-                return False
-                
-            compressed_file = self._download_epg(source_url)
-            if not compressed_file:
+            # Download EPG
+            url = self.config['source']['url']
+            xml_content = self._download_epg(url)
+            
+            if xml_content is None:
+                logger.error("Falha ao baixar EPG")
                 return False
             
-            # Descompressão
-            xml_file = "epg_original.xml"
-            if not self._decompress_file(compressed_file, xml_file):
+            # Processa XML
+            processed_xml = self._process_xml(xml_content)
+            
+            if processed_xml is None:
+                logger.error("Falha ao processar XML")
                 return False
-            
-            # Validação
-            if not self._validate_xml(xml_file):
-                return False
-            
-            # Processamento
-            parser_xml = etree.XMLParser(recover=True)
-            tree = etree.parse(xml_file, parser_xml)
-            root = tree.getroot()
-            
-            # Estatísticas
-            channels = root.findall('channel')
-            programmes = root.findall('programme')
-            
-            self.stats['channels_processed'] = len(channels)
-            self.stats['programmes_processed'] = len(programmes)
-            
-            # Aplica timeshift
-            modified_count = self._process_programmes(root)
-            self.stats['programmes_modified'] = modified_count
             
             # Salva resultado
-            output_file = "epg_timeshift.xml"
-            self._backup_file(output_file)
+            self._save_output(processed_xml)
             
-            tree.write(
-                output_file,
-                encoding='utf-8',
-                xml_declaration=True,
-                pretty_print=True
-            )
-            
-            # Compressão opcional
-            final_file = self._compress_output(output_file)
+            # Gera relatório
+            self._generate_metrics_report()
             
             # Atualiza configuração
-            self.config['last_update'] = datetime.now().isoformat()
             self._save_config()
             
-            # Limpeza
-            for temp_file in [compressed_file, xml_file]:
-                if os.path.exists(temp_file):
-                    os.remove(temp_file)
-            
-            # Estatísticas finais
-            self.stats['processing_time'] = (datetime.now() - start_time).total_seconds()
-            self._log_stats()
-            
-            logger.info(f"Processamento concluído com sucesso: {final_file}")
+            logger.info("Processamento concluído com sucesso!")
             return True
             
         except Exception as e:
             logger.error(f"Erro no processamento: {e}")
-            self.stats['errors'].append(f"Erro geral: {e}")
+            self.metrics['errors'].append(str(e))
             return False
-    
-    def _log_stats(self):
-        """Registra estatísticas do processamento"""
-        logger.info("=== ESTATÍSTICAS DO PROCESSAMENTO ===")
-        logger.info(f"Canais processados: {self.stats['channels_processed']}")
-        logger.info(f"Programas processados: {self.stats['programmes_processed']}")
-        logger.info(f"Programas modificados: {self.stats['programmes_modified']}")
-        logger.info(f"Cache hits: {self.stats['cache_hits']}")
-        logger.info(f"Cache misses: {self.stats['cache_misses']}")
-        logger.info(f"Tempo de processamento: {self.stats['processing_time']:.2f}s")
-        
-        if self.stats['errors']:
-            logger.warning(f"Erros encontrados: {len(self.stats['errors'])}")
-            for error in self.stats['errors']:
-                logger.warning(f"  - {error}")
-    
-    def get_stats(self) -> Dict:
-        """Retorna estatísticas do processamento"""
-        return self.stats.copy()
-    
-    def add_channel_offset(self, channel_id: str, offset_seconds: int):
-        """Adiciona offset específico para um canal"""
-        if 'channel_offsets' not in self.config:
-            self.config['channel_offsets'] = {}
-        
-        self.config['channel_offsets'][channel_id] = offset_seconds
-        self._save_config()
-        logger.info(f"Offset configurado para canal {channel_id}: {offset_seconds}s")
-    
-    def remove_channel_offset(self, channel_id: str):
-        """Remove offset específico de um canal"""
-        if 'channel_offsets' in self.config and channel_id in self.config['channel_offsets']:
-            del self.config['channel_offsets'][channel_id]
-            self._save_config()
-            logger.info(f"Offset removido para canal {channel_id}")
-    
-    def list_channel_offsets(self) -> Dict[str, int]:
-        """Lista todos os offsets de canais"""
-        return self.config.get('channel_offsets', {}).copy()
 
 
 def main():
-    """Função principal"""
-    try:
-        processor = EPGProcessor()
-        
-        # Verifica argumentos da linha de comando
-        if len(sys.argv) > 1:
-            if sys.argv[1] == '--stats':
-                # Mostra apenas estatísticas
-                processor.process_epg()
-                stats = processor.get_stats()
-                print(json.dumps(stats, indent=2))
-                return
-            elif sys.argv[1] == '--config':
-                # Mostra configuração atual
-                print(json.dumps(processor.config, indent=2))
-                return
-        
-        # Processamento normal
-        success = processor.process_epg()
-        
-        if success:
-            logger.info("EPG processado com sucesso!")
-            sys.exit(0)
-        else:
-            logger.error("Falha no processamento do EPG")
-            sys.exit(1)
-            
-    except KeyboardInterrupt:
-        logger.info("Processamento interrompido pelo usuário")
-        sys.exit(1)
-    except Exception as e:
-        logger.error(f"Erro inesperado: {e}")
-        sys.exit(1)
+    """Função principal com argumentos de linha de comando"""
+    parser = argparse.ArgumentParser(description='EPG Processor - Sistema de processamento automático')
+    parser.add_argument('--config', default='config.json', help='Arquivo de configuração')
+    parser.add_argument('--force-offset', type=int, help='Força offset específico (segundos)')
+    parser.add_argument('--force-duration', type=int, default=24, help='Duração do offset forçado (horas)')
+    parser.add_argument('--set-channel', nargs=2, metavar=('CHANNEL_ID', 'OFFSET'), 
+                       help='Define offset para canal específico')
+    parser.add_argument('--run-once', action='store_true', help='Executa uma vez e sai')
+    parser.add_argument('--verbose', action='store_true', help='Log detalhado')
+    
+    args = parser.parse_args()
+    
+    # Configura nível de log
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+    
+    # Cria processador
+    processor = EPGProcessor(args.config)
+    
+    # Processa argumentos
+    if args.force_offset is not None:
+        processor.set_force_timeshift(args.force_offset, args.force_duration)
+        print(f"Offset forçado definido: {args.force_offset}s por {args.force_duration}h")
+    
+    if args.set_channel:
+        channel_id, offset = args.set_channel
+        processor.set_channel_timeshift(channel_id, int(offset))
+        print(f"Offset do canal {channel_id} definido: {offset}s")
+    
+    # Executa processamento
+    if args.run_once or args.force_offset is not None or args.set_channel:
+        success = processor.process()
+        sys.exit(0 if success else 1)
+    else:
+        # Execução normal (compatibilidade com GitHub Actions)
+        success = processor.process()
+        sys.exit(0 if success else 1)
 
 
 if __name__ == "__main__":
