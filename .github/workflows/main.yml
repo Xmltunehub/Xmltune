@@ -1,50 +1,45 @@
 name: EPG Processor
 
 on:
-  # Execução automática diária às 06:00 UTC
   schedule:
-    - cron: '0 6 * * *'
-  
-  # Execução manual com opções
+    - cron: '0 6 * * *'  # Executa todos os dias às 06:00 UTC
   workflow_dispatch:
     inputs:
-      execution_mode:
+      mode:
         description: 'Modo de execução'
         required: true
         default: 'auto'
         type: choice
         options:
-          - auto
-          - force_timeshift
-          - channel_config
-      
-      timeshift_seconds:
+        - auto
+        - force_timeshift
+        - channel_config
+      timeshift:
         description: 'Timeshift em segundos (para force_timeshift)'
         required: false
+        type: string
         default: '30'
-        type: string
-      
-      timeshift_duration:
-        description: 'Duração do timeshift forçado em horas'
+      duration:
+        description: 'Duração em horas (para force_timeshift)'
         required: false
-        default: '24'
         type: string
-      
+        default: '24'
       channel_id:
         description: 'ID do canal (para channel_config)'
         required: false
         type: string
-      
       channel_offset:
         description: 'Offset do canal em segundos (para channel_config)'
         required: false
         type: string
-      
       verbose:
         description: 'Log detalhado'
         required: false
-        default: false
         type: boolean
+        default: false
+
+permissions:
+  contents: write
 
 jobs:
   process-epg:
@@ -53,214 +48,101 @@ jobs:
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Setup Python
-      uses: actions/setup-python@v4
+      
+    - name: Set up Python
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip'
-    
+        
     - name: Install dependencies
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-    
-    - name: Configure Git
+        
+    - name: Process EPG - Auto Mode
+      if: github.event.inputs.mode == 'auto' || github.event.inputs.mode == ''
       run: |
-        git config --local user.email "action@github.com"
-        git config --local user.name "GitHub Action"
-    
-    - name: Execute EPG Processing - Auto Mode
-      if: github.event.inputs.execution_mode == 'auto' || github.event.inputs.execution_mode == ''
-      run: |
-        echo "=== EXECUÇÃO AUTOMÁTICA DIÁRIA ==="
         if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
           python run_manager.py --auto --verbose
         else
           python run_manager.py --auto
         fi
-    
-    - name: Execute EPG Processing - Force Timeshift
-      if: github.event.inputs.execution_mode == 'force_timeshift'
-      run: |
-        echo "=== EXECUÇÃO COM TIMESHIFT FORÇADO ==="
-        TIMESHIFT="${{ github.event.inputs.timeshift_seconds }}"
-        DURATION="${{ github.event.inputs.timeshift_duration }}"
         
-        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
-          python run_manager.py --force ${TIMESHIFT} --force-duration ${DURATION} --verbose
-        else
-          python run_manager.py --force ${TIMESHIFT} --force-duration ${DURATION}
+    - name: Process EPG - Force Timeshift
+      if: github.event.inputs.mode == 'force_timeshift'
+      run: |
+        ARGS="--force ${{ github.event.inputs.timeshift }}"
+        if [ -n "${{ github.event.inputs.duration }}" ]; then
+          ARGS="$ARGS --force-duration ${{ github.event.inputs.duration }}"
         fi
-    
-    - name: Execute EPG Processing - Channel Config
-      if: github.event.inputs.execution_mode == 'channel_config'
-      run: |
-        echo "=== CONFIGURAÇÃO DE CANAL ESPECÍFICO ==="
-        CHANNEL_ID="${{ github.event.inputs.channel_id }}"
-        CHANNEL_OFFSET="${{ github.event.inputs.channel_offset }}"
+        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
+          ARGS="$ARGS --verbose"
+        fi
+        python run_manager.py $ARGS
         
-        if [ -z "$CHANNEL_ID" ] || [ -z "$CHANNEL_OFFSET" ]; then
-          echo "Erro: channel_id e channel_offset são obrigatórios para channel_config"
+    - name: Process EPG - Channel Config
+      if: github.event.inputs.mode == 'channel_config'
+      run: |
+        ARGS="--channel ${{ github.event.inputs.channel_id }} ${{ github.event.inputs.channel_offset }}"
+        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
+          ARGS="$ARGS --verbose"
+        fi
+        python run_manager.py $ARGS
+        
+    - name: Move and compress EPG file to root
+      run: |
+        if [ -f outputs/epg_processed.xml ]; then
+          # Copia para a raiz e comprime
+          cp outputs/epg_processed.xml ./epg_processed.xml
+          gzip -c epg_processed.xml > epg_processed.xml.gz
+          
+          # Remove arquivo XML não comprimido da raiz (mantém só o .gz)
+          rm epg_processed.xml
+          
+          echo "✅ EPG copiado para a raiz e comprimido"
+          echo "📁 Arquivos na raiz:"
+          ls -la *.gz
+          echo "📊 Tamanho do arquivo:"
+          du -h epg_processed.xml.gz
+        else
+          echo "❌ Arquivo EPG não encontrado em outputs/"
           exit 1
         fi
         
-        if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
-          python run_manager.py --channel "$CHANNEL_ID" "$CHANNEL_OFFSET" --verbose
-        else
-          python run_manager.py --channel "$CHANNEL_ID" "$CHANNEL_OFFSET"
-        fi
-    
-    - name: Check for Android sync
+    - name: Commit and push changes
       run: |
-        if [ -f "android_config.json" ]; then
-          echo "=== SINCRONIZAÇÃO COM ANDROID DETECTADA ==="
-          python run_manager.py --android-sync
-        fi
-    
-    - name: Generate status report
-      run: |
-        echo "=== RELATÓRIO DE STATUS ==="
-        python run_manager.py --status
-    
-    - name: List configured channels
-      run: |
-        echo "=== CANAIS CONFIGURADOS ==="
-        python run_manager.py --list-channels
-    
-    - name: Upload artifacts
-      uses: actions/upload-artifact@v4
-      with:
-        name: epg-processing-results
-        path: |
-          epg_processed.xml
-          epg_processed.xml.gz
-          metrics_report.json
-          android_status.json
-          epg_processor.log
-        retention-days: 30
-    
-    - name: Commit changes
-      run: |
-        git add -A
+        git config --local user.email "action@github.com"
+        git config --local user.name "GitHub Action"
+        
+        # Adiciona apenas o arquivo .gz
+        git add epg_processed.xml.gz
         
         # Verifica se há mudanças
         if git diff --staged --quiet; then
-          echo "Nenhuma mudança para commit"
+          echo "📝 Nenhuma mudança detectada no EPG"
         else
-          # Determina mensagem de commit baseada no modo
-          if [ "${{ github.event.inputs.execution_mode }}" = "force_timeshift" ]; then
-            COMMIT_MSG="EPG processado com timeshift forçado: ${{ github.event.inputs.timeshift_seconds }}s"
-          elif [ "${{ github.event.inputs.execution_mode }}" = "channel_config" ]; then
-            COMMIT_MSG="EPG processado - Canal ${{ github.event.inputs.channel_id }} configurado: ${{ github.event.inputs.channel_offset }}s"
-          else
-            COMMIT_MSG="EPG processado automaticamente - $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-          fi
+          # Commit com informações úteis
+          TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          FILESIZE=$(du -h epg_processed.xml.gz | cut -f1)
           
-          git commit -m "$COMMIT_MSG"
+          git commit -m "📺 Atualizar EPG processado - $TIMESTAMP
+          
+          📊 Tamanho: $FILESIZE
+          🔄 Processamento automático
+          ⚡ Pronto para uso em apps OTT TV"
+          
           git push
-        fi
-    
-    - name: Cleanup old artifacts
-      run: |
-        # Remove backups muito antigos
-        find . -name "*.backup_*" -type f -mtime +7 -delete || true
-        
-        # Remove logs antigos
-        find . -name "*.log.*" -type f -mtime +30 -delete || true
-        
-        # Remove cache antigo
-        find . -name "cache_*.xml.gz" -type f -mtime +2 -delete || true
-    
-    - name: Notification on failure
-      if: failure()
-      run: |
-        echo "=== ERRO NO PROCESSAMENTO EPG ==="
-        echo "Modo de execução: ${{ github.event.inputs.execution_mode }}"
-        echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
-        
-        # Mostra últimas linhas do log
-        if [ -f "epg_processor.log" ]; then
-          echo "Últimas linhas do log:"
-          tail -20 epg_processor.log
+          echo "✅ EPG atualizado no repositório"
         fi
         
-        # Cria issue automático se configurado
-        if [ -n "${{ secrets.GITHUB_TOKEN }}" ]; then
-          echo "Issue de erro será criado automaticamente"
-        fi
-
-  # Job para criar issue em caso de falha
-  create-issue-on-failure:
-    needs: process-epg
-    runs-on: ubuntu-latest
-    if: failure()
-    
-    steps:
-    - name: Create issue on failure
-      uses: actions/github-script@v7
-      with:
-        script: |
-          const title = `EPG Processing Failed - ${new Date().toISOString().split('T')[0]}`;
-          const body = `
-          ## EPG Processing Failure Report
-          
-          **Timestamp:** ${new Date().toISOString()}
-          **Execution Mode:** ${{ github.event.inputs.execution_mode || 'auto' }}
-          **Run ID:** ${{ github.run_id }}
-          
-          ### Parameters
-          - Timeshift: ${{ github.event.inputs.timeshift_seconds || 'default' }}s
-          - Duration: ${{ github.event.inputs.timeshift_duration || '24' }}h
-          - Channel: ${{ github.event.inputs.channel_id || 'N/A' }}
-          - Channel Offset: ${{ github.event.inputs.channel_offset || 'N/A' }}s
-          
-          ### Action Required
-          Please check the workflow logs for detailed error information.
-          
-          **Workflow URL:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          
-          ### Auto-generated by GitHub Actions
-          This issue was created automatically due to EPG processing failure.
-          `;
-          
-          github.rest.issues.create({
-            owner: context.repo.owner,
-            repo: context.repo.repo,
-            title: title,
-            body: body,
-            labels: ['bug', 'epg-processing', 'automated']
-          });
-
-  # Job para limpeza semanal
-  weekly-cleanup:
-    runs-on: ubuntu-latest
-    if: github.event.schedule == '0 6 * * 0'  # Domingos
-    
-    steps:
-    - name: Checkout repository
-      uses: actions/checkout@v4
-      with:
-        token: ${{ secrets.GITHUB_TOKEN }}
-    
-    - name: Weekly cleanup
+    - name: Display final URLs
       run: |
-        echo "=== LIMPEZA SEMANAL ==="
-        
-        # Remove arquivos temporários antigos
-        find . -name "*.tmp" -type f -mtime +7 -delete || true
-        find . -name "*.cache" -type f -mtime +7 -delete || true
-        find . -name "cache_*.xml.gz" -type f -mtime +7 -delete || true
-        
-        # Remove logs muito antigos
-        find . -name "*.log.*" -type f -mtime +30 -delete || true
-        
-        # Remove backups muito antigos
-        find . -name "*.backup_*" -type f -mtime +14 -delete || true
-        
-        # Otimiza git
-        git gc --aggressive --prune=now || true
-        
-        echo "Limpeza semanal concluída"
+        echo "🎉 EPG processado com sucesso!"
+        echo ""
+        echo "📺 URL para usar na sua App OTT TV:"
+        echo "https://raw.githubusercontent.com/xmltune/epg-processor/main/epg_processed.xml.gz"
+        echo ""
+        echo "📄 O arquivo também está visível na raiz do repositório:"
+        echo "https://github.com/xmltune/epg-processor/blob/main/epg_processed.xml.gz"
+        echo ""
+        echo "🔄 Próxima atualização: Amanhã às 06:00 UTC"
