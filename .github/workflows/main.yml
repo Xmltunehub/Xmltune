@@ -1,4 +1,4 @@
-name: EPG Processor
+name: Data Processor
 
 on:
   schedule:
@@ -59,18 +59,50 @@ jobs:
         python -m pip install --upgrade pip
         pip install -r requirements.txt
         
+    - name: Verify Python files
+      run: |
+        echo "🔍 Verificando arquivos Python..."
+        if [ -f "run_manager.py" ]; then
+          echo "✅ run_manager.py encontrado"
+        else
+          echo "❌ run_manager.py não encontrado"
+        fi
+        
+        if [ -f "processar.py" ]; then
+          echo "✅ processar.py encontrado"
+        else
+          echo "❌ processar.py não encontrado"
+        fi
+        
+        if [ -f "config.json" ]; then
+          echo "✅ config.json encontrado"
+        else
+          echo "❌ config.json não encontrado"
+        fi
+        
+        echo "📋 Arquivos na pasta atual:"
+        ls -la *.py *.json 2>/dev/null || echo "Nenhum arquivo Python/JSON encontrado"
+        
+    - name: Create outputs directory
+      run: |
+        mkdir -p outputs
+        echo "📁 Pasta outputs criada"
+        
     - name: Process EPG - Auto Mode
       if: github.event.inputs.mode == 'auto' || github.event.inputs.mode == ''
       run: |
+        echo "🔄 Iniciando processamento em modo automático..."
         if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
           python run_manager.py --auto --verbose
         else
           python run_manager.py --auto
         fi
+        echo "✅ Processamento concluído"
         
     - name: Process EPG - Force Timeshift
       if: github.event.inputs.mode == 'force_timeshift'
       run: |
+        echo "🔄 Iniciando processamento com timeshift forçado..."
         ARGS="--force ${{ github.event.inputs.timeshift }}"
         if [ -n "${{ github.event.inputs.duration }}" ]; then
           ARGS="$ARGS --force-duration ${{ github.event.inputs.duration }}"
@@ -79,35 +111,82 @@ jobs:
           ARGS="$ARGS --verbose"
         fi
         python run_manager.py $ARGS
+        echo "✅ Processamento concluído"
         
     - name: Process EPG - Channel Config
       if: github.event.inputs.mode == 'channel_config'
       run: |
+        echo "🔄 Iniciando configuração de canal..."
         ARGS="--channel ${{ github.event.inputs.channel_id }} ${{ github.event.inputs.channel_offset }}"
         if [ "${{ github.event.inputs.verbose }}" = "true" ]; then
           ARGS="$ARGS --verbose"
         fi
         python run_manager.py $ARGS
+        echo "✅ Configuração concluída"
         
-    - name: Move and compress EPG file to root
+    - name: Fallback - Try direct processing
+      if: always()
       run: |
-        if [ -f outputs/epg_processed.xml ]; then
-          # Copia para a raiz e comprime
-          cp outputs/epg_processed.xml ./epg_processed.xml
-          gzip -c epg_processed.xml > epg_processed.xml.gz
-          
-          # Remove arquivo XML não comprimido da raiz (mantém só o .gz)
-          rm epg_processed.xml
-          
-          echo "✅ EPG copiado para a raiz e comprimido"
-          echo "📁 Arquivos na raiz:"
-          ls -la *.gz
-          echo "📊 Tamanho do arquivo:"
-          du -h epg_processed.xml.gz
-        else
-          echo "❌ Arquivo EPG não encontrado em outputs/"
-          exit 1
+        echo "🔄 Tentando processamento direto como fallback..."
+        # Tenta o script original se o run_manager falhar
+        if [ ! -f outputs/epg_processed.xml ]; then
+          echo "📋 Tentando processar.py diretamente..."
+          python processar.py --force-offset 30 || echo "⚠️ Falha no processamento direto"
         fi
+        
+    - name: Debug and check files
+      run: |
+        echo "🔍 Verificando arquivos gerados..."
+        echo ""
+        echo "📁 Conteúdo da pasta atual:"
+        ls -la
+        echo ""
+        echo "📁 Conteúdo da pasta outputs (se existir):"
+        if [ -d outputs ]; then
+          ls -la outputs/
+        else
+          echo "❌ Pasta outputs não existe"
+        fi
+        echo ""
+        echo "🔍 Procurando por arquivos XML:"
+        find . -name "*.xml" -type f 2>/dev/null || echo "Nenhum arquivo XML encontrado"
+        
+    - name: Move and compress data file to root
+      run: |
+        # Primeiro, vamos verificar onde está o arquivo
+        if [ -f outputs/epg_processed.xml ]; then
+          SOURCE_FILE="outputs/epg_processed.xml"
+          echo "✅ Arquivo encontrado em outputs/epg_processed.xml"
+        elif [ -f epg_processed.xml ]; then
+          SOURCE_FILE="epg_processed.xml"
+          echo "✅ Arquivo encontrado na raiz: epg_processed.xml"
+        else
+          echo "❌ Procurando arquivo XML processado..."
+          # Procura por qualquer arquivo XML gerado
+          XML_FILE=$(find . -name "*.xml" -type f | head -n 1)
+          if [ -n "$XML_FILE" ]; then
+            SOURCE_FILE="$XML_FILE"
+            echo "✅ Arquivo XML encontrado: $XML_FILE"
+          else
+            echo "❌ Nenhum arquivo XML encontrado"
+            echo "📋 Listando todos os arquivos:"
+            find . -type f -name "*" | head -20
+            exit 1
+          fi
+        fi
+        
+        # Processa o arquivo encontrado
+        cp "$SOURCE_FILE" ./data_processed.xml
+        gzip -c data_processed.xml > data_processed.xml.gz
+        
+        # Remove arquivo XML não comprimido da raiz (mantém só o .gz)
+        rm data_processed.xml
+        
+        echo "✅ Dados copiados para a raiz e comprimidos"
+        echo "📁 Arquivos na raiz:"
+        ls -la *.gz
+        echo "📊 Tamanho do arquivo:"
+        du -h data_processed.xml.gz
         
     - name: Commit and push changes
       run: |
@@ -115,34 +194,34 @@ jobs:
         git config --local user.name "GitHub Action"
         
         # Adiciona apenas o arquivo .gz
-        git add epg_processed.xml.gz
+        git add data_processed.xml.gz
         
         # Verifica se há mudanças
         if git diff --staged --quiet; then
-          echo "📝 Nenhuma mudança detectada no EPG"
+          echo "📝 Nenhuma mudança detectada nos dados"
         else
           # Commit com informações úteis
           TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          FILESIZE=$(du -h epg_processed.xml.gz | cut -f1)
+          FILESIZE=$(du -h data_processed.xml.gz | cut -f1)
           
-          git commit -m "📺 Atualizar EPG processado - $TIMESTAMP
+          git commit -m "📊 Atualizar dados processados - $TIMESTAMP
           
           📊 Tamanho: $FILESIZE
           🔄 Processamento automático
-          ⚡ Pronto para uso em apps OTT TV"
+          ⚡ Pronto para uso"
           
           git push
-          echo "✅ EPG atualizado no repositório"
+          echo "✅ Dados atualizados no repositório"
         fi
         
     - name: Display final URLs
       run: |
-        echo "🎉 EPG processado com sucesso!"
+        echo "🎉 Dados processados com sucesso!"
         echo ""
-        echo "📺 URL para usar na sua App OTT TV:"
-        echo "https://raw.githubusercontent.com/xmltune/epg-processor/main/epg_processed.xml.gz"
+        echo "📊 URL para usar na sua aplicação:"
+        echo "https://raw.githubusercontent.com/xmltune/epg-processor/main/data_processed.xml.gz"
         echo ""
         echo "📄 O arquivo também está visível na raiz do repositório:"
-        echo "https://github.com/xmltune/epg-processor/blob/main/epg_processed.xml.gz"
+        echo "https://github.com/xmltune/epg-processor/blob/main/data_processed.xml.gz"
         echo ""
         echo "🔄 Próxima atualização: Amanhã às 06:00 UTC"
