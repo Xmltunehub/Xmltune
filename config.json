@@ -11,9 +11,14 @@
   
   "source": {
     "url": "https://epgshare01.online/epgshare01/epg_ripper_PT1.xml.gz",
-    "backup_urls": [],
+    "backup_urls": [
+      "https://epgshare01.online/epgshare01/epg_ripper_PT2.xml.gz",
+      "https://raw.githubusercontent.com/xmltune/epg-processor/main/data_processed.xml.gz"
+    ],
     "timeout": 300,
-    "retry_attempts": 3
+    "retry_attempts": 3,
+    "multi_source_enabled": true,
+    "source_priority": ["primary", "backup1", "backup2"]
   },
   
   "processing": {
@@ -21,7 +26,9 @@
     "cache_duration_hours": 24,
     "validate_xml": true,
     "generate_metrics": true,
-    "compress_output": true
+    "compress_output": true,
+    "channel_mapping_enabled": false,
+    "channel_mapping_file": "channel_mapping.json"
   },
   
   "output": {
@@ -37,18 +44,21 @@
   },
   
   "android_integration": {
-    "api_enabled": false,
+    "api_enabled": true,
     "api_port": 8080,
-    "api_key": null,
+    "api_key": "xmltune-2025-secure-key",
     "allow_remote_config": true,
-    "sync_interval_minutes": 60
+    "sync_interval_minutes": 60,
+    "enable_push_notifications": true,
+    "notification_events": ["process_complete", "error_occurred", "config_changed"]
   },
   
   "logging": {
     "level": "INFO",
     "keep_logs_days": 30,
     "detailed_metrics": true,
-    "log_file": "process.log"
+    "log_file": "process.log",
+    "api_log_file": "api_server.log"
   },
   
   "profiles": {
@@ -56,6 +66,36 @@
       "name": "Configuração Padrão",
       "active": true,
       "description": "Perfil padrão para processamento automático"
+    },
+    "android": {
+      "name": "Perfil Android",
+      "active": false,
+      "description": "Perfil otimizado para uso com app Android",
+      "timeshift_default": 30,
+      "auto_notifications": true
+    },
+    "manual": {
+      "name": "Perfil Manual",
+      "active": false,
+      "description": "Perfil para execução manual com controle total",
+      "timeshift_default": 0,
+      "auto_notifications": false
     }
+  },
+  
+  "security": {
+    "require_api_key": true,
+    "allowed_origins": ["*"],
+    "rate_limit_requests_per_minute": 60,
+    "session_timeout_minutes": 30
+  },
+  
+  "features": {
+    "multi_source_support": true,
+    "channel_mapping": true,
+    "custom_timeshift_rules": true,
+    "api_endpoints": true,
+    "mobile_app_integration": true,
+    "advanced_caching": true
   }
 }
