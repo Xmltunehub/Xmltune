@@ -47,7 +47,8 @@
   "logging": {
     "level": "INFO",
     "keep_logs_days": 30,
-    "detailed_metrics": true
+    "detailed_metrics": true,
+    "log_file": "process.log"
   },
   
   "profiles": {
@@ -57,4 +58,3 @@
       "description": "Perfil padrão para processamento automático"
     }
   }
-}
