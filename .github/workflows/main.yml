@@ -1,4 +1,4 @@
-name: EPG Processor
+name: Data Processor
 
 on:
   schedule:
@@ -89,23 +89,23 @@ jobs:
         fi
         python run_manager.py $ARGS
         
-    - name: Move and compress EPG file to root
+    - name: Move and compress data file to root
       run: |
         if [ -f outputs/epg_processed.xml ]; then
           # Copia para a raiz e comprime
-          cp outputs/epg_processed.xml ./epg_processed.xml
-          gzip -c epg_processed.xml > epg_processed.xml.gz
+          cp outputs/epg_processed.xml ./data_processed.xml
+          gzip -c data_processed.xml > data_processed.xml.gz
           
           # Remove arquivo XML não comprimido da raiz (mantém só o .gz)
-          rm epg_processed.xml
+          rm data_processed.xml
           
-          echo "✅ EPG copiado para a raiz e comprimido"
+          echo "✅ Dados copiados para a raiz e comprimidos"
           echo "📁 Arquivos na raiz:"
           ls -la *.gz
           echo "📊 Tamanho do arquivo:"
-          du -h epg_processed.xml.gz
+          du -h data_processed.xml.gz
         else
-          echo "❌ Arquivo EPG não encontrado em outputs/"
+          echo "❌ Arquivo de dados não encontrado em outputs/"
           exit 1
         fi
         
@@ -115,34 +115,34 @@ jobs:
         git config --local user.name "GitHub Action"
         
         # Adiciona apenas o arquivo .gz
-        git add epg_processed.xml.gz
+        git add data_processed.xml.gz
         
         # Verifica se há mudanças
         if git diff --staged --quiet; then
-          echo "📝 Nenhuma mudança detectada no EPG"
+          echo "📝 Nenhuma mudança detectada nos dados"
         else
           # Commit com informações úteis
           TIMESTAMP=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
-          FILESIZE=$(du -h epg_processed.xml.gz | cut -f1)
+          FILESIZE=$(du -h data_processed.xml.gz | cut -f1)
           
-          git commit -m "📺 Atualizar EPG processado - $TIMESTAMP
+          git commit -m "📊 Atualizar dados processados - $TIMESTAMP
           
           📊 Tamanho: $FILESIZE
           🔄 Processamento automático
-          ⚡ Pronto para uso em apps OTT TV"
+          ⚡ Pronto para uso"
           
           git push
-          echo "✅ EPG atualizado no repositório"
+          echo "✅ Dados atualizados no repositório"
         fi
         
     - name: Display final URLs
       run: |
-        echo "🎉 EPG processado com sucesso!"
+        echo "🎉 Dados processados com sucesso!"
         echo ""
-        echo "📺 URL para usar na sua App OTT TV:"
-        echo "https://raw.githubusercontent.com/xmltune/epg-processor/main/epg_processed.xml.gz"
+        echo "📊 URL para usar na sua aplicação:"
+        echo "https://raw.githubusercontent.com/xmltune/epg-processor/main/data_processed.xml.gz"
         echo ""
         echo "📄 O arquivo também está visível na raiz do repositório:"
-        echo "https://github.com/xmltune/epg-processor/blob/main/epg_processed.xml.gz"
+        echo "https://github.com/xmltune/epg-processor/blob/main/data_processed.xml.gz"
         echo ""
         echo "🔄 Próxima atualização: Amanhã às 06:00 UTC"
