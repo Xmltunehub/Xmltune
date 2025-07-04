@@ -21,11 +21,11 @@
     "cache_duration_hours": 24,
     "validate_xml": true,
     "generate_metrics": true,
-    "compress_output": false
+    "compress_output": true
   },
   
   "output": {
-    "filename": "epg_processed.xml",
+    "filename": "data_processed.xml",
     "keep_backups": 3,
     "include_metadata": true
   },
@@ -58,3 +58,4 @@
       "description": "Perfil padrão para processamento automático"
     }
   }
+}
